@@ -1,0 +1,41 @@
+{
+  "telegram": {
+    "api_id": 2040,
+    "api_hash": "",
+    "phone": "",
+    "session_name": "trader_session"
+  },
+  "report_bot": {
+    "bot_token": "",
+    "authorized_user_ids": [0]
+  },
+  "mt5": {
+    "login": 0,
+    "password": "***",
+    "server": "MetaQuotes-Demo",
+    "terminal_path": "",
+    "symbol": "XAUUSD"
+  },
+  "channels": [
+    {
+      "id": "@gold_alicxzos110",
+      "format": "format1"
+    },
+    {
+      "id": "@Xsd_Gold_SignaIs1",
+      "format": "format2"
+    },
+    {
+      "id": "@bttesteamin",
+      "format": "format1"
+    }
+  ],
+  "trading": {
+    "lot_size": 0.01,
+    "default_tp_index": 2,
+    "max_sl_pips": 150,
+    "max_daily_sl_pips": 500,
+    "bot_active": true,
+    "settings_password": "Amin123"
+  }
+}
