@@ -125,9 +125,61 @@ def parse_format2(text: str, channel: str) -> Optional[Signal]:
     )
 
 
+def parse_format3(text: str, channel: str) -> Optional[Signal]:
+    """Parse Format 3: simple plain-text format.
+
+    Example:
+    XAUUSD Sell 4064
+
+    TP 4059
+    TP 4054
+    TP 4049
+
+
+    SL 4074
+    """
+    full_text = text.strip()
+
+    # Direction and entry: XAUUSD Sell 4064
+    dir_match = re.search(
+        r"XAUUSD\s+(BUY|SELL)\s+([\d.]+)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not dir_match:
+        return None
+
+    direction = dir_match.group(1).upper()
+    entry = float(dir_match.group(2))
+
+    # Stop loss: SL 4074
+    sl_match = re.search(r"SL\s+([\d.]+)", full_text, re.IGNORECASE)
+    if not sl_match:
+        return None
+    stop_loss = float(sl_match.group(1))
+
+    # Take profits: TP 4059
+    tp_matches = re.findall(r"TP\s+([\d.]+)", full_text, re.IGNORECASE)
+    if not tp_matches:
+        return None
+
+    take_profits = [float(tp) for tp in tp_matches]
+
+    return Signal(
+        symbol="XAUUSD",
+        direction=direction,
+        entry=entry,
+        stop_loss=stop_loss,
+        take_profits=take_profits,
+        raw_text=text,
+        source_channel=channel,
+    )
+
+
 PARSERS = {
     "format1": parse_format1,
     "format2": parse_format2,
+    "format3": parse_format3,
 }
 
 
