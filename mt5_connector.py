@@ -103,14 +103,17 @@ class MT5Connector:
         max_sl_pips: int = 150,
     ) -> Optional[int]:
         """
-        Place a limit order based on the signal.
+        Place an order based on the signal.
 
-        - Uses entry as the limit price.
+        - If the limit price is valid (above market for SELL, below for BUY),
+          places a LIMIT order.
+        - If the limit price is invalid (market already moved past it),
+          falls back to a MARKET order at current price.
         - Uses the TP at tp_index (1-based) as take profit.
         - Uses the signal's stop loss.
         - Validates SL distance does not exceed max_sl_pips.
 
-        Returns the order ticket (request result order) or None on failure.
+        Returns the order ticket, or None on failure, or -1 if rejected due to SL limit.
         """
         if not self.ensure_connected():
             return None
@@ -129,26 +132,12 @@ class MT5Connector:
                 self.logger.error(f"Failed to select symbol {symbol}.")
                 return None
 
-        # Determine order type
-        if direction == "BUY":
-            order_type = mt5.ORDER_TYPE_BUY_LIMIT
-        elif direction == "SELL":
-            order_type = mt5.ORDER_TYPE_SELL_LIMIT
-        else:
-            self.logger.error(f"Unknown direction: {direction}")
-            return None
-
         # Get TP
         tp_index = max(1, min(tp_index, len(signal.take_profits)))
         tp_price = signal.take_profits[tp_index - 1]
 
         # Validate SL distance
-        sl_distance_pips = abs(signal.entry - signal.stop_loss)
-        # For gold (XAUUSD), 1 pip = 0.1 (standard) or we use point-based
-        # Gold typically: 1 pip = $0.10 movement, so pips = distance / 0.1
         point = symbol_info.point
-        # Using the standard: for gold, pips = price_diff / 0.1
-        # But many brokers use different point sizes. We'll use: pips = diff / (point * 10)
         pip_size = point * 10 if point < 0.01 else 0.1
         sl_distance_pips_calc = abs(signal.entry - signal.stop_loss) / pip_size
 
@@ -170,31 +159,94 @@ class MT5Connector:
         sl_price = round(signal.stop_loss, digits)
         tp_price_norm = round(tp_price, digits)
 
+        # Get current market price
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            self.logger.error(f"Failed to get tick for {symbol}")
+            return None
+
+        current_bid = tick.bid
+        current_ask = tick.ask
+
         # Fill mode
         filling = mt5.symbol_info(symbol)
         filling_type = mt5.ORDER_FILLING_RETURN
         if filling:
             filling_type = filling.filling_mode
 
-        request = {
-            "action": mt5.TRADE_ACTION_PENDING,
-            "symbol": symbol,
-            "volume": lot_size,
-            "type": order_type,
-            "price": entry_price,
-            "sl": sl_price,
-            "tp": tp_price_norm,
-            "deviation": 20,
-            "magic": 779900,
-            "comment": f"XAU-Bot|{signal.source_channel}",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": filling_type,
-        }
+        # Determine if limit order is valid, or if we need market order
+        use_market = False
+        if direction == "SELL":
+            # SELL LIMIT: entry must be above current ask price
+            if entry_price <= current_ask:
+                self.logger.info(
+                    f"SELL LIMIT price {entry_price} <= current ask {current_ask}. "
+                    f"Market already moved past entry. Using MARKET order."
+                )
+                use_market = True
+                order_type = mt5.ORDER_TYPE_SELL
+                execution_price = current_bid  # market sell uses bid
+        elif direction == "BUY":
+            # BUY LIMIT: entry must be below current bid price
+            if entry_price >= current_bid:
+                self.logger.info(
+                    f"BUY LIMIT price {entry_price} >= current bid {current_bid}. "
+                    f"Market already moved past entry. Using MARKET order."
+                )
+                use_market = True
+                order_type = mt5.ORDER_TYPE_BUY
+                execution_price = current_ask  # market buy uses ask
+        else:
+            self.logger.error(f"Unknown direction: {direction}")
+            return None
+
+        if not use_market:
+            if direction == "SELL":
+                order_type = mt5.ORDER_TYPE_SELL_LIMIT
+                execution_price = entry_price
+            else:
+                order_type = mt5.ORDER_TYPE_BUY_LIMIT
+                execution_price = entry_price
+
+        # Build request
+        if use_market:
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": lot_size,
+                "type": order_type,
+                "price": execution_price,
+                "sl": sl_price,
+                "tp": tp_price_norm,
+                "deviation": 20,
+                "magic": 779900,
+                "comment": f"XAU-Bot-MKT|{signal.source_channel}",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling_type,
+            }
+            order_desc = f"MARKET {direction}"
+        else:
+            request = {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "symbol": symbol,
+                "volume": lot_size,
+                "type": order_type,
+                "price": execution_price,
+                "sl": sl_price,
+                "tp": tp_price_norm,
+                "deviation": 20,
+                "magic": 779900,
+                "comment": f"XAU-Bot|{signal.source_channel}",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling_type,
+            }
+            order_desc = f"LIMIT {direction}"
 
         self.logger.info(
-            f"Placing limit order: {direction} {symbol} "
-            f"vol={lot_size} price={entry_price} "
-            f"sl={sl_price} tp={tp_price_norm} (TP#{tp_index})"
+            f"Placing {order_desc} order: {symbol} "
+            f"vol={lot_size} price={execution_price} "
+            f"sl={sl_price} tp={tp_price_norm} (TP#{tp_index}) "
+            f"[bid={current_bid} ask={current_ask}]"
         )
 
         result = mt5.order_send(request)
@@ -212,7 +264,7 @@ class MT5Connector:
 
         self.logger.info(
             f"Order placed successfully: ticket={result.order} "
-            f"retcode={result.retcode}"
+            f"retcode={result.retcode} type={order_desc}"
         )
         return result.order
 
