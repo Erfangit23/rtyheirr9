@@ -40,6 +40,7 @@ class TradeRecord:
     status: str
     timestamp: str
     raw_signal: str = ""
+    tp1: float = 0.0  # TP1 price for cancellation logic
 
 
 class TradeManager:
@@ -176,6 +177,7 @@ class TradeManager:
             status=TradeStatus.PENDING.value,
             timestamp=now,
             raw_signal=signal.raw_text[:200],
+            tp1=signal.take_profits[0] if signal.take_profits else 0,
         )
         self.trades.append(record)
         self._save_trades()
@@ -249,6 +251,47 @@ class TradeManager:
                         f"#{trade.ticket} {trade.direction} {trade.symbol}"
                     )
                     updated = True
+
+            elif trade.tp1 > 0 and trade.ticket in order_tickets:
+                # Order still pending — check if price reached TP1
+                # If so, the opportunity is gone; cancel the order
+                prices = self.mt5.get_symbol_price(trade.symbol)
+                if prices:
+                    current_bid, current_ask = prices
+                    tp1 = trade.tp1
+
+                    should_cancel = False
+                    if trade.direction == "SELL":
+                        # For SELL: if price drops to TP1, entry was never hit
+                        # (entry is above TP1 for a sell)
+                        if current_bid <= tp1:
+                            should_cancel = True
+                    elif trade.direction == "BUY":
+                        # For BUY: if price rises to TP1, entry was never hit
+                        # (entry is below TP1 for a buy)
+                        if current_ask >= tp1:
+                            should_cancel = True
+
+                    if should_cancel:
+                        self.logger.info(
+                            f"Price reached TP1 ({tp1}) for pending {trade.direction} "
+                            f"order #{trade.ticket}. Cancelling order."
+                        )
+                        cancelled = self.mt5.cancel_order(trade.ticket)
+                        if cancelled:
+                            trade.status = TradeStatus.CANCELLED.value
+                            updated = True
+                            await self._report(
+                                f"🗑️ Order CANCELLED - price hit TP1 without filling:\n"
+                                f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                                f"Entry: {trade.entry} (never filled)\n"
+                                f"TP1: {tp1} was reached\n"
+                                f"Source: {trade.channel}"
+                            )
+                        else:
+                            self.logger.error(
+                                f"Failed to cancel order #{trade.ticket}"
+                            )
 
         if updated:
             self._save_trades()
