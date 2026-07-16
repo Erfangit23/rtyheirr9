@@ -6,7 +6,7 @@ Also tracks trades for reporting.
 import logging
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -249,6 +249,33 @@ class TradeManager:
                         f"#{trade.ticket} {trade.direction} {trade.symbol}"
                     )
                     updated = True
+
+            elif trade.ticket in order_tickets:
+                # Order still pending — check if it's been 45 minutes
+                try:
+                    trade_time = datetime.fromisoformat(trade.timestamp)
+                    elapsed = datetime.now(timezone.utc) - trade_time
+                    if elapsed > timedelta(minutes=45):
+                        self.logger.info(
+                            f"Order #{trade.ticket} pending for {elapsed}, "
+                            f"cancelling (45 min timeout)."
+                        )
+                        cancelled = self.mt5.cancel_order(trade.ticket)
+                        if cancelled:
+                            trade.status = TradeStatus.CANCELLED.value
+                            updated = True
+                            await self._report(
+                                f"⏰ Order CANCELLED - 45 min timeout:\n"
+                                f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                                f"Entry: {trade.entry} (never filled in 45 min)\n"
+                                f"Source: {trade.channel}"
+                            )
+                        else:
+                            self.logger.error(
+                                f"Failed to cancel expired order #{trade.ticket}"
+                            )
+                except Exception as e:
+                    self.logger.error(f"Timeout check error for trade #{trade.ticket}: {e}")
 
         if updated:
             self._save_trades()

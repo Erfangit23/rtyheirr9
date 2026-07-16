@@ -170,6 +170,25 @@ class MT5Connector:
         sl_price = round(signal.stop_loss, digits)
         tp_price_norm = round(tp_price, digits)
 
+        # Adjust entry price 10 pips closer to market to increase fill probability.
+        # This compensates for broker price differences.
+        # 10 pips on gold (XAUUSD) = 1.0 price unit (1 pip = 0.1)
+        pip_adjustment = 1.0  # 10 pips in price units
+        if direction == "SELL":
+            # SELL LIMIT: lower the entry by 10 pips (closer to current market)
+            adjusted_entry = round(entry_price - pip_adjustment, digits)
+            self.logger.info(
+                f"Entry adjusted -10 pips for fill: {entry_price} -> {adjusted_entry}"
+            )
+            entry_price = adjusted_entry
+        elif direction == "BUY":
+            # BUY LIMIT: raise the entry by 10 pips (closer to current market)
+            adjusted_entry = round(entry_price + pip_adjustment, digits)
+            self.logger.info(
+                f"Entry adjusted +10 pips for fill: {entry_price} -> {adjusted_entry}"
+            )
+            entry_price = adjusted_entry
+
         # Fill mode
         filling = mt5.symbol_info(symbol)
         filling_type = mt5.ORDER_FILLING_RETURN
