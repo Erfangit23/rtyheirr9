@@ -280,6 +280,39 @@ class TradeManager:
         if updated:
             self._save_trades()
 
+    def get_channel_stats(self) -> dict:
+        """Compute per-channel statistics from trade history."""
+        stats = {}
+        for trade in self.trades:
+            ch = trade.channel
+            if ch not in stats:
+                stats[ch] = {
+                    "total": 0,
+                    "filled": 0,
+                    "tp_hit": 0,
+                    "sl_hit": 0,
+                    "cancelled": 0,
+                    "rejected": 0,
+                    "pending": 0,
+                    "profit": 0.0,
+                }
+            s = stats[ch]
+            s["total"] += 1
+            if trade.status == TradeStatus.PENDING.value:
+                s["pending"] += 1
+            elif trade.status == TradeStatus.FILLED.value:
+                s["filled"] += 1
+            elif trade.status == TradeStatus.TP_HIT.value:
+                s["tp_hit"] += 1
+            elif trade.status == TradeStatus.SL_HIT.value:
+                s["sl_hit"] += 1
+            elif trade.status == TradeStatus.CANCELLED.value:
+                s["cancelled"] += 1
+            elif trade.status == TradeStatus.REJECTED_SL.value:
+                s["rejected"] += 1
+
+        return stats
+
     def _check_deal_history(self, ticket: int) -> Optional[dict]:
         """Check deal history for a closed position by ticket."""
         try:

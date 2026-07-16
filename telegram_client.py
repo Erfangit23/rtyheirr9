@@ -27,6 +27,7 @@ class TelegramManager:
         channels: list[dict],
         authorized_user_ids: list[int],
         logger: Optional[logging.Logger] = None,
+        settings=None,
     ):
         self.api_id = api_id
         self.api_hash = api_hash
@@ -36,6 +37,7 @@ class TelegramManager:
         self.channels = channels
         self.authorized_user_ids = authorized_user_ids
         self.logger = logger or logging.getLogger("xau_trader")
+        self.settings = settings  # Reference to Settings for channel active check
 
         # User client for reading channel messages
         self.user_client: Optional[TelegramClient] = None
@@ -157,6 +159,13 @@ class TelegramManager:
 
             if not matched_channel:
                 return
+
+            # Check if channel is active
+            if self.settings:
+                ch_id = matched_channel["id"]
+                if not self.settings.is_channel_active(ch_id):
+                    self.logger.info(f"Channel {ch_id} is deactivated. Signal ignored.")
+                    return
 
             msg_id = event.message.id
             if msg_id in self.processed_ids:

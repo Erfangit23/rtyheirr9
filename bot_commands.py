@@ -16,10 +16,12 @@ class CommandHandler:
         self,
         settings: Settings,
         mt5: MT5Connector,
+        trade_manager=None,
         logger: Optional[logging.Logger] = None,
     ):
         self.settings = settings
         self.mt5 = mt5
+        self.trade_manager = trade_manager
         self.logger = logger or logging.getLogger("xau_trader")
         self._awaiting_password = {}  # user_id -> expected_action
 
@@ -34,6 +36,7 @@ class CommandHandler:
                 "Commands:\n"
                 "/status - Bot & MT5 status\n"
                 "/settings - View current settings\n"
+                "/channels - Channel stats & status\n"
                 "/trades - Open positions & pending orders\nn"
                 "/report - Today's trade summary\n\n"
                 "🔐 To change settings, send:\n"
@@ -46,6 +49,9 @@ class CommandHandler:
 
         if text.lower() == "/settings":
             return self._cmd_settings()
+
+        if text.lower() == "/channels":
+            return self._cmd_channels()
 
         if text.lower() == "/trades":
             return self._cmd_trades()
@@ -71,7 +77,9 @@ class CommandHandler:
                     "4️⃣ dailysl <pips> - Set max daily SL pips\n"
                     "5️⃣ sleep - Pause the bot\n"
                     "6️⃣ wake - Resume the bot\n"
-                    "7️⃣ done - Finish settings change"
+                    "7️⃣ chan on <@channel> - Activate channel\n"
+                    "8️⃣ chan off <@channel> - Deactivate channel\n"
+                    "9️⃣ done - Finish settings change"
                 )
             else:
                 self._awaiting_password.pop(user_id)
@@ -140,9 +148,29 @@ class CommandHandler:
             self.settings.set_bot_active(True)
             return "☀️ Bot is now ACTIVE. Ready to trade."
 
+        if parts[0] == "chan" and len(parts) >= 3:
+            action = parts[1]
+            channel_id = parts[2]
+            # Normalize: ensure @ prefix
+            if not channel_id.startswith("@"):
+                channel_id = "@" + channel_id
+            # Check channel exists
+            ch = self.settings.get_channel_by_id(channel_id)
+            if ch is None:
+                return f"❌ Channel {channel_id} not found in config."
+            if action == "on":
+                self.settings.set_channel_active(channel_id, True)
+                return f"✅ Channel {channel_id} ACTIVATED."
+            elif action == "off":
+                self.settings.set_channel_active(channel_id, False)
+                return f"💤 Channel {channel_id} DEACTIVATED."
+            else:
+                return "❌ Use: chan on <@channel> or chan off <@channel>"
+
         return (
             "Unknown command. Options:\n"
-            "lot <size> | tp <index> | maxsl <pips> | dailysl <pips> | sleep | wake | done"
+            "lot <size> | tp <index> | maxsl <pips> | dailysl <pips> | sleep | wake | "
+            "chan on <@channel> | chan off <@channel> | done"
         )
 
     def _cmd_status(self) -> str:
@@ -229,4 +257,57 @@ class CommandHandler:
             lines.append("No deals today.\n")
 
         lines.append(f"\nTotal loss (losing deals): {total_loss:.2f} USD")
+        return "".join(lines)
+
+    def _cmd_channels(self) -> str:
+        """Show channel status and per-channel trading stats."""
+        channels = self.settings.channels
+        if not channels:
+            return "No channels configured."
+
+        # Get per-channel stats from trade manager
+        stats = {}
+        if self.trade_manager:
+            stats = self.trade_manager.get_channel_stats()
+
+        lines = ["📡 Channels Status\n\n"]
+
+        for ch in channels:
+            ch_id = ch["id"]
+            fmt = ch.get("format", "auto")
+            is_active = ch.get("active", True)
+            status_icon = "✅" if is_active else "💤"
+
+            lines.append(f"{status_icon} {ch_id} ({fmt})")
+
+            s = stats.get(ch_id, {})
+            if s:
+                total = s.get("total", 0)
+                tp_hits = s.get("tp_hit", 0)
+                sl_hits = s.get("sl_hit", 0)
+                cancelled = s.get("cancelled", 0)
+                rejected = s.get("rejected", 0)
+                pending = s.get("pending", 0)
+                filled = s.get("filled", 0)
+
+                # Winrate: closed trades only (tp + sl)
+                closed = tp_hits + sl_hits
+                winrate = (tp_hits / closed * 100) if closed > 0 else 0
+
+                lines.append(
+                    f"   Trades: {total} | Pending: {pending} | Filled: {filled}\n"
+                    f"   TP hits: {tp_hits} | SL hits: {sl_hits}\n"
+                    f"   Cancelled: {cancelled} | Rejected: {rejected}\n"
+                    f"   Winrate: {winrate:.1f}% ({closed} closed)\n"
+                )
+            else:
+                lines.append("   No trades yet.\n")
+
+            lines.append("")
+
+        lines.append(
+            "Send /change to activate/deactivate channels (password required)\n"
+            "Then use: chan on <@channel> or chan off <@channel>"
+        )
+
         return "".join(lines)

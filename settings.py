@@ -6,7 +6,7 @@ import json
 import os
 import threading
 import logging
-from typing import Optional
+from typing import Optional, List, Dict
 
 
 class Settings:
@@ -61,6 +61,30 @@ class Settings:
     @property
     def channels(self) -> list:
         return self._data.get("channels", [])
+
+    def get_channel_by_id(self, channel_id: str) -> Optional[dict]:
+        """Find a channel config by its id."""
+        for ch in self.channels:
+            if ch.get("id") == channel_id:
+                return ch
+        return None
+
+    def set_channel_active(self, channel_id: str, active: bool):
+        """Activate or deactivate a channel."""
+        with self._lock:
+            for ch in self._data.get("channels", []):
+                if ch.get("id") == channel_id:
+                    ch["active"] = active
+                    self.save()
+                    return True
+        return False
+
+    def is_channel_active(self, channel_id: str) -> bool:
+        """Check if a channel is active (default True if not set)."""
+        ch = self.get_channel_by_id(channel_id)
+        if ch is None:
+            return False
+        return ch.get("active", True)
 
     # --- Trading ---
     @property

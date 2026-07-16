@@ -94,6 +94,7 @@ async def main():
         channels=settings.channels,
         authorized_user_ids=bot_config.get("authorized_user_ids", []),
         logger=logger,
+        settings=settings,
     )
 
     # Set up the report callback (sends messages via bot)
@@ -112,6 +113,7 @@ async def main():
     command_handler = CommandHandler(
         settings=settings,
         mt5=mt5_conn,
+        trade_manager=trade_manager,
         logger=logger,
     )
 
