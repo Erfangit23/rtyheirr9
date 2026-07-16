@@ -141,8 +141,9 @@ def parse_format3(text: str, channel: str) -> Optional[Signal]:
     full_text = text.strip()
 
     # Direction and entry: XAUUSD Sell 4064
+    # Also handles: XAUUSD buy 4029, XAUUSD BUY 4029, etc.
     dir_match = re.search(
-        r"XAUUSD\s+(BUY|SELL)\s+([\d.]+)",
+        r"XAUUSD\s+(BUY|SELL)\s+(?:NOW\s+)?(?:@\s*)?([\d.]+)",
         full_text,
         re.IGNORECASE,
     )
@@ -152,14 +153,14 @@ def parse_format3(text: str, channel: str) -> Optional[Signal]:
     direction = dir_match.group(1).upper()
     entry = float(dir_match.group(2))
 
-    # Stop loss: SL 4074
-    sl_match = re.search(r"SL\s+([\d.]+)", full_text, re.IGNORECASE)
+    # Stop loss: SL 4074, SL: 4074, Stop Loss 4074, etc.
+    sl_match = re.search(r"(?:SL|STOP\s*LOSS)\s*:?\s*([\d.]+)", full_text, re.IGNORECASE)
     if not sl_match:
         return None
     stop_loss = float(sl_match.group(1))
 
-    # Take profits: TP 4059
-    tp_matches = re.findall(r"TP\s+([\d.]+)", full_text, re.IGNORECASE)
+    # Take profits: TP 4059, TP: 4059, Tp1 4059, Take Profit 4059, etc.
+    tp_matches = re.findall(r"(?:TP|TAKE\s*PROFIT)\s*\d*\s*:?(?:\s+)([\d.]+)", full_text, re.IGNORECASE)
     if not tp_matches:
         return None
 
