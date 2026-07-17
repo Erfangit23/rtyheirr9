@@ -255,10 +255,10 @@ class TradeManager:
                 try:
                     trade_time = datetime.fromisoformat(trade.timestamp)
                     elapsed = datetime.now(timezone.utc) - trade_time
-                    if elapsed > timedelta(minutes=45):
+                    if elapsed > timedelta(minutes=80):
                         self.logger.info(
                             f"Order #{trade.ticket} pending for {elapsed}, "
-                            f"cancelling (45 min timeout)."
+                            f"cancelling (80 min timeout)."
                         )
                         cancelled = self.mt5.cancel_order(trade.ticket)
                         if cancelled:
@@ -267,7 +267,7 @@ class TradeManager:
                             await self._report(
                                 f"⏰ Order CANCELLED - 45 min timeout:\n"
                                 f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
-                                f"Entry: {trade.entry} (never filled in 45 min)\n"
+                                f"Entry: {trade.entry} (never filled in 80 min)\n"
                                 f"Source: {trade.channel}"
                             )
                         else:
