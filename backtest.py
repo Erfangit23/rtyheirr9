@@ -41,7 +41,7 @@ class Backtester:
     """Backtests historical signals against MT5 price data."""
 
     # Entry must be filled within this many minutes of signal
-    ENTRY_WINDOW_MINUTES = 60
+    ENTRY_WINDOW_MINUTES = 150
 
     # After entry, check this many hours for TP/SL
     TP_SL_WINDOW_HOURS = 8
