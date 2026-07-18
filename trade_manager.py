@@ -97,6 +97,25 @@ class TradeManager:
             )
             return
 
+        # Check blackout window: 13:00-15:00 Tehran time (GMT+3:30)
+        # 13:00 Tehran = 09:30 UTC, 15:00 Tehran = 11:30 UTC
+        from datetime import datetime, timezone, timedelta
+        tehran_tz = timezone(timedelta(hours=3, minutes=30))
+        now_tehran = datetime.now(tehran_tz)
+        current_hour_min = now_tehran.hour * 100 + now_tehran.minute
+        if 1300 <= current_hour_min < 1500:
+            self.logger.info(
+                f"Signal ignored - blackout window (13:00-15:00 Tehran). "
+                f"Current Tehran time: {now_tehran.strftime('%H:%M')}"
+            )
+            await self._report(
+                f"⏸️ Signal skipped - blackout window (13:00-15:00 Tehran):\n"
+                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                f"Source: {signal.source_channel}\n"
+                f"Current time: {now_tehran.strftime('%H:%M')} Tehran"
+            )
+            return
+
         # Check daily SL limit
         daily_summary = self.mt5.get_today_trade_summary()
         daily_loss = daily_summary.get("total_loss_usd", 0.0)
