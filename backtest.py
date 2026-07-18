@@ -268,14 +268,15 @@ class Backtester:
         self,
         channel_id: str,
         fmt: str = "auto",
-        limit: int = 100,
+        limit: int = 500,
+        target_signals: int = 100,
         tp_index: int = 2,
     ) -> BacktestResult:
         """Run full backtest on a channel."""
         result = BacktestResult()
 
-        # Fetch messages
-        messages = await self.fetch_channel_messages(channel_id, limit)
+        # Fetch messages (scans up to 'limit' messages, stops at target_signals)
+        messages = await self.fetch_channel_messages(channel_id, limit, target_signals)
         result.total_signals = len(messages)
 
         # Parse and test each message
@@ -332,7 +333,7 @@ class Backtester:
             f"Entry filled: {result.entry_hit}",
             f"  ✅ TP hit: {result.tp_hit}",
             f"  ❌ SL hit: {result.sl_hit}",
-            f"⚪ Entry not filled (1h timeout): {result.no_entry}",
+            f"⚪ Entry not filled (150min timeout): {result.no_entry}",
             f"⚠️ Errors: {result.errors}",
             f"",
             f"🎯 Winrate: {result.winrate:.1f}% ({result.tp_hit}W / {result.sl_hit}L)",
@@ -346,7 +347,7 @@ class Backtester:
             for r in recent:
                 if r["status"] == "no_entry":
                     status_icon = "⚪"
-                    detail = "Entry not filled (1h)"
+                    detail = "Entry not filled (150min)"
                 elif r["status"] == "tp_hit":
                     status_icon = "✅"
                     detail = f"TP hit at {r['close_time']}"
