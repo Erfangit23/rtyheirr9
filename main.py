@@ -110,10 +110,24 @@ async def main():
     tg_manager.register_signal_handler(signal_callback)
 
     # Set up command handler
+    # tg_manager.user_client will be set after connect_user_client(),
+    # but we pass a lambda that retrieves it lazily
+    class TgClientProxy:
+        """Lazy proxy to get the telethon user client after it's connected."""
+        def __init__(self, tg_manager):
+            self._tg_manager = tg_manager
+        def __getattr__(self, name):
+            if self._tg_manager.user_client:
+                return getattr(self._tg_manager.user_client, name)
+            raise AttributeError("User client not connected")
+
+    tg_client_proxy = TgClientProxy(tg_manager)
+
     command_handler = CommandHandler(
         settings=settings,
         mt5=mt5_conn,
         trade_manager=trade_manager,
+        tg_user_client=tg_client_proxy,
         logger=logger,
     )
 

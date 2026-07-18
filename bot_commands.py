@@ -4,6 +4,7 @@ Handles user commands for settings and reports.
 """
 
 import logging
+import asyncio
 from settings import Settings
 from mt5_connector import MT5Connector
 from typing import Optional
@@ -17,17 +18,73 @@ class CommandHandler:
         settings: Settings,
         mt5: MT5Connector,
         trade_manager=None,
+        tg_user_client=None,
         logger: Optional[logging.Logger] = None,
     ):
         self.settings = settings
         self.mt5 = mt5
         self.trade_manager = trade_manager
+        self.tg_user_client = tg_user_client  # Telethon user client for backtest
         self.logger = logger or logging.getLogger("xau_trader")
         self._awaiting_password = {}  # user_id -> expected_action
+        self._backtest_state = {}  # user_id -> backtest flow state
 
     async def handle(self, text: str, user_id: int) -> str:
         """Handle a command from the user. Returns the response text."""
         text = text.strip()
+
+        # --- Backtest flow (check first, takes priority) ---
+        if user_id in self._backtest_state:
+            state = self._backtest_state[user_id]
+
+            if state == "selecting_channel":
+                try:
+                    choice = int(text.strip())
+                    channels = self.settings.channels
+                    if choice < 1 or choice > len(channels):
+                        return f"❌ Invalid number. Choose 1-{len(channels)}."
+                    selected = channels[choice - 1]
+                    self._backtest_state[user_id] = {
+                        "channel": selected["id"],
+                        "format": selected.get("format", "auto"),
+                    }
+                    return (
+                        f"Selected: {selected['id']}\n\n"
+                        f"Enter TP index to backtest (1-10, default 2):\n"
+                        f"Or send 'default' for TP2."
+                    )
+                except ValueError:
+                    self._backtest_state.pop(user_id)
+                    return "❌ Invalid input. Backtest cancelled."
+
+            elif isinstance(state, dict) and "channel" in state and "tp" not in state:
+                if text.strip().lower() == "default":
+                    tp_index = 2
+                else:
+                    try:
+                        tp_index = int(text.strip())
+                        if tp_index < 1 or tp_index > 10:
+                            return "❌ TP index must be 1-10. Try again:"
+                    except ValueError:
+                        self._backtest_state.pop(user_id)
+                        return "❌ Invalid input. Backtest cancelled."
+
+                # Run the backtest
+                channel_id = state["channel"]
+                fmt = state["format"]
+                self._backtest_state.pop(user_id)
+
+                self.logger.info(
+                    f"Starting backtest: {channel_id} TP{tp_index} for user {user_id}"
+                )
+                try:
+                    result_text = await self.run_backtest_async(
+                        channel_id, fmt, tp_index, user_id
+                    )
+                    return result_text
+                except Exception as e:
+                    self.logger.error(f"Backtest error: {e}", exc_info=True)
+                    return f"❌ Backtest failed: {e}"
 
         # --- Commands that don't need password ---
         if text.lower() == "/start":
@@ -37,8 +94,9 @@ class CommandHandler:
                 "/status - Bot & MT5 status\n"
                 "/settings - View current settings\n"
                 "/channels - Channel stats & status\n"
-                "/trades - Open positions & pending orders\nn"
-                "/report - Today's trade summary\n\n"
+                "/trades - Open positions & pending orders\n"
+                "/report - Today's trade summary\n"
+                "/backtest - Backtest a channel's signals\n\n"
                 "🔐 To change settings, send:\n"
                 "/change - Start settings change flow\n\n"
                 "⚠️ Default password: Amin123"
@@ -52,6 +110,9 @@ class CommandHandler:
 
         if text.lower() == "/channels":
             return self._cmd_channels()
+
+        if text.lower() == "/backtest":
+            return self._cmd_backtest_start(user_id)
 
         if text.lower() == "/trades":
             return self._cmd_trades()
@@ -311,3 +372,40 @@ class CommandHandler:
         )
 
         return "".join(lines)
+
+    def _cmd_backtest_start(self, user_id: int) -> str:
+        """Start the backtest flow by showing channel list."""
+        if not self.tg_user_client:
+            return "❌ Backtest requires Telegram user client to be connected."
+
+        channels = self.settings.channels
+        if not channels:
+            return "No channels configured."
+
+        lines = ["📊 Backtest\n\nSelect a channel:\n\n"]
+        for i, ch in enumerate(channels, 1):
+            lines.append(f"{i}. {ch['id']} ({ch.get('format', 'auto')})\n")
+
+        lines.append("\nSend the channel number (e.g. 1)")
+        self._backtest_state[user_id] = "selecting_channel"
+        return "".join(lines)
+
+    async def run_backtest_async(self, channel_id: str, fmt: str, tp_index: int, user_id: int):
+        """Run backtest and return formatted results."""
+        from backtest import Backtester
+
+        backtester = Backtester(
+            user_client=self.tg_user_client,
+            mt5_connector=self.mt5,
+            logger=self.logger,
+        )
+
+        self.logger.info(f"Starting backtest for {channel_id}, TP{tp_index}, last 100 signals")
+        result = await backtester.run_backtest(
+            channel_id=channel_id,
+            fmt=fmt,
+            limit=100,
+            tp_index=tp_index,
+        )
+
+        return backtester.format_results(result, channel_id)
