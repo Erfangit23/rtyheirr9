@@ -59,23 +59,37 @@ class Backtester:
     async def fetch_channel_messages(
         self,
         channel_id: str,
-        limit: int = 100,
+        limit: int = 500,
+        target_signals: int = 100,
     ) -> list:
-        """Fetch last N messages from a channel via Telethon."""
+        """Fetch messages from a channel until we have target_signals parsed signals.
+
+        Fetches up to 'limit' messages but stops early once target_signals
+        are collected.
+        """
         try:
             entity = await self.user_client.get_entity(channel_id)
             messages = []
+            signals_found = 0
 
             async for msg in self.user_client.iter_messages(entity, limit=limit):
                 if msg.text:
-                    # Telethon returns msg.date as timezone-aware UTC datetime
                     messages.append({
                         "id": msg.id,
                         "text": msg.text,
                         "date": msg.date,  # UTC datetime
                     })
+                    # Quick check if this looks like a signal
+                    from signal_parser import parse_signal as _ps
+                    if _ps(msg.text, channel_id, "auto"):
+                        signals_found += 1
+                        if signals_found >= target_signals:
+                            break
 
-            self.logger.info(f"Fetched {len(messages)} messages from {channel_id}")
+            self.logger.info(
+                f"Fetched {len(messages)} messages from {channel_id}, "
+                f"{signals_found} signals found"
+            )
             return messages
         except Exception as e:
             self.logger.error(f"Failed to fetch messages from {channel_id}: {e}")
