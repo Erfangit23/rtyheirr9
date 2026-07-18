@@ -154,13 +154,13 @@ def parse_format3(text: str, channel: str) -> Optional[Signal]:
     entry = float(dir_match.group(2))
 
     # Stop loss: SL 4074, SL: 4074, Stop Loss 4074, etc.
-    sl_match = re.search(r"(?:SL|STOP\s*LOSS)\s*:?\s*([\d.]+)", full_text, re.IGNORECASE)
+    sl_match = re.search(r"(?:SL|STOP\s*LOSS)\s*:?\s+(\d[\d.]+)", full_text, re.IGNORECASE)
     if not sl_match:
         return None
     stop_loss = float(sl_match.group(1))
 
     # Take profits: TP 4059, TP: 4059, Tp1 4059, Take Profit 4059, etc.
-    tp_matches = re.findall(r"(?:TP|TAKE\s*PROFIT)\s*\d*\s*:?(?:\s+)([\d.]+)", full_text, re.IGNORECASE)
+    tp_matches = re.findall(r"(?:TP|TAKE\s*PROFIT)\s*\d*\s*:?\s+(\d[\d.]+)", full_text, re.IGNORECASE)
     if not tp_matches:
         return None
 

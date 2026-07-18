@@ -178,7 +178,15 @@ class TelegramManager:
             )
 
             # Parse the signal
-            signal = parse_signal(text, matched_channel["id"], matched_channel.get("format", "auto"))
+            fmt = matched_channel.get("format", "auto")
+            signal = parse_signal(text, matched_channel["id"], fmt)
+
+            # If specified format failed, try auto as fallback
+            if not signal and fmt != "auto":
+                self.logger.info(
+                    f"Format '{fmt}' failed for message, trying auto..."
+                )
+                signal = parse_signal(text, matched_channel["id"], "auto")
 
             if signal:
                 self.logger.info(f"Parsed signal: {signal}")
@@ -188,7 +196,9 @@ class TelegramManager:
                     except Exception as e:
                         self.logger.error(f"Signal callback error: {e}")
             else:
-                self.logger.debug(f"Message did not match signal format: {text[:100]}")
+                self.logger.warning(
+                    f"Message did not match any signal format: {text[:200]}"
+                )
 
         self.logger.info("Channel monitoring started.")
         self.logger.info(f"Monitoring {len(self.channels)} channels: {[ch['id'] for ch in self.channels]}")
