@@ -40,6 +40,7 @@ class TradeRecord:
     status: str
     timestamp: str
     raw_signal: str = ""
+    tp2: float = 0.0  # TP2 price for cancellation logic
 
 
 class TradeManager:
@@ -195,6 +196,7 @@ class TradeManager:
             status=TradeStatus.PENDING.value,
             timestamp=now,
             raw_signal=signal.raw_text[:200],
+            tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else (signal.take_profits[0] if signal.take_profits else 0),
         )
         self.trades.append(record)
         self._save_trades()
@@ -270,31 +272,46 @@ class TradeManager:
                     updated = True
 
             elif trade.ticket in order_tickets:
-                # Order still pending — check if it's been 45 minutes
-                try:
-                    trade_time = datetime.fromisoformat(trade.timestamp)
-                    elapsed = datetime.now(timezone.utc) - trade_time
-                    if elapsed > timedelta(minutes=80):
-                        self.logger.info(
-                            f"Order #{trade.ticket} pending for {elapsed}, "
-                            f"cancelling (80 min timeout)."
-                        )
-                        cancelled = self.mt5.cancel_order(trade.ticket)
-                        if cancelled:
-                            trade.status = TradeStatus.CANCELLED.value
-                            updated = True
-                            await self._report(
-                                f"⏰ Order CANCELLED - 45 min timeout:\n"
-                                f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
-                                f"Entry: {trade.entry} (never filled in 80 min)\n"
-                                f"Source: {trade.channel}"
+                # Order still pending — check if price reached TP2
+                # If market hits TP2 without the entry filling, cancel the order
+                if trade.tp2 > 0:
+                    prices = self.mt5.get_symbol_price(trade.symbol)
+                    if prices:
+                        current_bid, current_ask = prices
+                        tp2 = trade.tp2
+
+                        should_cancel = False
+                        if trade.direction == "SELL":
+                            # For SELL: TP2 is below entry. If price drops to TP2
+                            # without entry being hit, the move happened without us.
+                            if current_bid <= tp2:
+                                should_cancel = True
+                        elif trade.direction == "BUY":
+                            # For BUY: TP2 is above entry. If price rises to TP2
+                            # without entry being hit, the move happened without us.
+                            if current_ask >= tp2:
+                                should_cancel = True
+
+                        if should_cancel:
+                            self.logger.info(
+                                f"Price reached TP2 ({tp2}) for pending {trade.direction} "
+                                f"order #{trade.ticket}. Cancelling order."
                             )
-                        else:
-                            self.logger.error(
-                                f"Failed to cancel expired order #{trade.ticket}"
-                            )
-                except Exception as e:
-                    self.logger.error(f"Timeout check error for trade #{trade.ticket}: {e}")
+                            cancelled = self.mt5.cancel_order(trade.ticket)
+                            if cancelled:
+                                trade.status = TradeStatus.CANCELLED.value
+                                updated = True
+                                await self._report(
+                                    f"🗑️ Order CANCELLED - price hit TP2 without filling:\n"
+                                    f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                                    f"Entry: {trade.entry} (never filled)\n"
+                                    f"TP2: {tp2} was reached\n"
+                                    f"Source: {trade.channel}"
+                                )
+                            else:
+                                self.logger.error(
+                                    f"Failed to cancel order #{trade.ticket}"
+                                )
 
         if updated:
             self._save_trades()
