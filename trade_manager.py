@@ -125,11 +125,17 @@ class TradeManager:
         if daily_loss > 0:
             self.logger.info(f"Today's loss so far: {daily_loss:.2f} USD")
 
-        # Get TP for the configured index
+        # Determine TP index and whether to place split orders
         # Per-channel TP override: gold_alicxzos110 uses TP3, others use default
+        # Gulljanali17: place TWO orders (TP1 and TP2), each 0.01 lot
+        split_orders = False
         if signal.source_channel == "@gold_alicxzos110":
             tp_index = 3
             self.logger.info("Channel @gold_alicxzos110: using TP3 override")
+        elif signal.source_channel == "@Gulljanali17":
+            split_orders = True
+            tp_index = 2
+            self.logger.info("Channel @Gulljanali17: placing split orders (TP1 + TP2)")
         else:
             tp_index = self.settings.default_tp_index
         if tp_index > len(signal.take_profits):
@@ -138,6 +144,120 @@ class TradeManager:
                 f"TP index {tp_index} > available TPs "
                 f"({len(signal.take_profits)}). Using TP{tp_index}."
             )
+
+        if split_orders:
+            # Place two separate orders: one with TP1, one with TP2
+            # Both use same entry and SL, each with lot_size
+            results = []
+            for tp_idx in [1, 2]:
+                if tp_idx > len(signal.take_profits):
+                    break
+                ticket = self.mt5.place_limit_order(
+                    signal=signal,
+                    lot_size=self.settings.lot_size,
+                    tp_index=tp_idx,
+                    max_sl_pips=self.settings.max_sl_pips,
+                )
+                results.append((tp_idx, ticket))
+
+            now = datetime.now(timezone.utc).isoformat()
+
+            # Check if all failed
+            all_failed = all(t is None for _, t in results)
+            all_rejected = all(t == -1 for _, t in results)
+
+            if all_failed:
+                self.logger.error("Both split orders failed to place.")
+                await self._report(
+                    f"❌ Both orders FAILED to place:\n"
+                    f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                    f"SL={signal.stop_loss}\n"
+                    f"Source: {signal.source_channel}\n"
+                    f"Check MT5 connection and logs."
+                )
+                return
+
+            if all_rejected:
+                sl_pips = abs(signal.entry - signal.stop_loss) / 0.1
+                for tp_idx, _ in results:
+                    record = TradeRecord(
+                        ticket=0,
+                        channel=signal.source_channel,
+                        symbol=signal.symbol,
+                        direction=signal.direction,
+                        entry=signal.entry,
+                        sl=signal.stop_loss,
+                        tp=signal.take_profits[tp_idx - 1] if signal.take_profits else 0,
+                        tp_index=tp_idx,
+                        lot_size=self.settings.lot_size,
+                        status=TradeStatus.REJECTED_SL.value,
+                        timestamp=now,
+                        raw_signal=signal.raw_text[:200],
+                        tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else 0,
+                    )
+                    self.trades.append(record)
+                self._save_trades()
+                await self._report(
+                    f"🚫 Both orders REJECTED - SL too large:\n"
+                    f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                    f"SL={signal.stop_loss} ({sl_pips:.0f} pips > {self.settings.max_sl_pips} max)\n"
+                    f"Source: {signal.source_channel}"
+                )
+                return
+
+            # Process results
+            report_lines = [f"✅ Split orders placed ({signal.source_channel}):"]
+            for tp_idx, ticket in results:
+                if ticket is None:
+                    report_lines.append(f"  TP{tp_idx}: ❌ FAILED")
+                    continue
+                if ticket == -1:
+                    report_lines.append(f"  TP{tp_idx}: 🚫 REJECTED (SL too large)")
+                    record = TradeRecord(
+                        ticket=0,
+                        channel=signal.source_channel,
+                        symbol=signal.symbol,
+                        direction=signal.direction,
+                        entry=signal.entry,
+                        sl=signal.stop_loss,
+                        tp=signal.take_profits[tp_idx - 1] if signal.take_profits else 0,
+                        tp_index=tp_idx,
+                        lot_size=self.settings.lot_size,
+                        status=TradeStatus.REJECTED_SL.value,
+                        timestamp=now,
+                        raw_signal=signal.raw_text[:200],
+                        tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else 0,
+                    )
+                    self.trades.append(record)
+                    continue
+
+                # Success
+                record = TradeRecord(
+                    ticket=ticket,
+                    channel=signal.source_channel,
+                    symbol=signal.symbol,
+                    direction=signal.direction,
+                    entry=signal.entry,
+                    sl=signal.stop_loss,
+                    tp=signal.take_profits[tp_idx - 1] if signal.take_profits else 0,
+                    tp_index=tp_idx,
+                    lot_size=self.settings.lot_size,
+                    status=TradeStatus.PENDING.value,
+                    timestamp=now,
+                    raw_signal=signal.raw_text[:200],
+                    tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else 0,
+                )
+                self.trades.append(record)
+                report_lines.append(
+                    f"  #{ticket} TP{tp_idx} @ {signal.take_profits[tp_idx - 1]}"
+                )
+
+            self._save_trades()
+            report_lines.append(
+                f"Entry: {signal.entry} | SL: {signal.stop_loss} | Lot: {self.settings.lot_size} each"
+            )
+            await self._report("\n".join(report_lines))
+            return
 
         # Place the limit order
         ticket = self.mt5.place_limit_order(
