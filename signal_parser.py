@@ -50,9 +50,10 @@ def parse_format1(text: str, channel: str) -> Optional[Signal]:
     lines = text.strip().split("\n")
     full_text = text.strip()
 
-    # Direction and entry: 📊XAUUSD SELL NOW ( 4167 ) ✅
+    # Direction and entry: XAUUSD SELL NOW ( 4167 ) ✅
+    # The 📊 emoji may or may not be present on the first line
     dir_match = re.search(
-        r"📊\s*XAUUSD\s+(BUY|SELL)\s+NOW\s*\(\s*([\d.]+)\s*\)",
+        r"XAUUSD\s+(BUY|SELL)\s+NOW\s*\(\s*([\d.]+)\s*\)",
         full_text,
         re.IGNORECASE,
     )
