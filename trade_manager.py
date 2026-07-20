@@ -126,11 +126,16 @@ class TradeManager:
             self.logger.info(f"Today's loss so far: {daily_loss:.2f} USD")
 
         # Get TP for the configured index
-        tp_index = self.settings.default_tp_index
+        # Per-channel TP override: gold_alicxzos110 uses TP3, others use default
+        if signal.source_channel == "@gold_alicxzos110":
+            tp_index = 3
+            self.logger.info("Channel @gold_alicxzos110: using TP3 override")
+        else:
+            tp_index = self.settings.default_tp_index
         if tp_index > len(signal.take_profits):
             tp_index = len(signal.take_profits)
             self.logger.warning(
-                f"TP index {self.settings.default_tp_index} > available TPs "
+                f"TP index {tp_index} > available TPs "
                 f"({len(signal.take_profits)}). Using TP{tp_index}."
             )
 
