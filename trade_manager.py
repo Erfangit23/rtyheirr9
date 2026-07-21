@@ -488,7 +488,8 @@ class TradeManager:
             elif trade.ticket in order_tickets:
                 # Order still pending — check if price reached TP2
                 # If market hits TP2 without the entry filling, cancel the order
-                if trade.tp2 > 0:
+                # Skip this check for dual-entry orders (BrianTradingForex) — they have their own TP
+                if trade.tp2 > 0 and trade.channel != "@BrianTradingForex":
                     prices = self.mt5.get_symbol_price(trade.symbol)
                     if prices:
                         current_bid, current_ask = prices
