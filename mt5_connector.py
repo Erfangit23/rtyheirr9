@@ -170,6 +170,52 @@ class MT5Connector:
         sl_price = round(signal.stop_loss, digits)
         tp_price_norm = round(tp_price, digits)
 
+        # Check if limit price is valid relative to current market
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            self.logger.error(f"Failed to get tick for {symbol}")
+            return None
+
+        current_bid = tick.bid
+        current_ask = tick.ask
+        self.logger.info(
+            f"Market check: bid={current_bid} ask={current_ask} | "
+            f"Limit entry={entry_price} ({direction})"
+        )
+
+        if direction == "BUY" and entry_price >= current_ask:
+            self.logger.warning(
+                f"BUY LIMIT price {entry_price} >= current ask {current_ask}. "
+                f"Market already below entry — order will be rejected."
+            )
+            return -10015  # Invalid price
+
+        if direction == "SELL" and entry_price <= current_bid:
+            self.logger.warning(
+                f"SELL LIMIT price {entry_price} <= current bid {current_bid}. "
+                f"Market already above entry — order will be rejected."
+            )
+            return -10015  # Invalid price
+
+        # Adjust entry price 10 pips closer to market to increase fill probability.
+        # This compensates for broker price differences.
+        # 10 pips on gold (XAUUSD) = 1.0 price unit (1 pip = 0.1)
+        pip_adjustment = 1.0  # 10 pips in price units
+        if direction == "SELL":
+            # SELL LIMIT: lower the entry by 10 pips (closer to current market)
+            adjusted_entry = round(entry_price - pip_adjustment, digits)
+            self.logger.info(
+                f"Entry adjusted -10 pips for fill: {entry_price} -> {adjusted_entry}"
+            )
+            entry_price = adjusted_entry
+        elif direction == "BUY":
+            # BUY LIMIT: raise the entry by 10 pips (closer to current market)
+            adjusted_entry = round(entry_price + pip_adjustment, digits)
+            self.logger.info(
+                f"Entry adjusted +10 pips for fill: {entry_price} -> {adjusted_entry}"
+            )
+            entry_price = adjusted_entry
+
         # Fill mode
         filling = mt5.symbol_info(symbol)
         filling_type = mt5.ORDER_FILLING_RETURN
@@ -208,7 +254,8 @@ class MT5Connector:
                 f"Order failed: retcode={result.retcode} "
                 f"comment={result.comment}"
             )
-            return None
+            # Return negative retcode so caller can report the actual error
+            return -result.retcode
 
         self.logger.info(
             f"Order placed successfully: ticket={result.order} "

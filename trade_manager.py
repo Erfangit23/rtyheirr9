@@ -348,6 +348,30 @@ class TradeManager:
             )
             return
 
+        if ticket == -10015:
+            # Invalid price — market already moved past entry
+            self.logger.warning(f"Order rejected - invalid price (market moved past entry)")
+            await self._report(
+                f"⏭️ Order SKIPPED - market already past entry:\n"
+                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                f"SL={signal.stop_loss} TP={signal.take_profits[tp_index-1]}\n"
+                f"Source: {signal.source_channel}\n"
+                f"Price moved before order could be placed."
+            )
+            return
+
+        if isinstance(ticket, int) and ticket < 0:
+            # Other MT5 error (negative retcode)
+            retcode = abs(ticket)
+            self.logger.error(f"Order rejected by MT5: retcode={retcode}")
+            await self._report(
+                f"❌ Order REJECTED by MT5 (code {retcode}):\n"
+                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                f"SL={signal.stop_loss} TP={signal.take_profits[tp_index-1]}\n"
+                f"Source: {signal.source_channel}"
+            )
+            return
+
         if ticket == -1:
             # Rejected due to SL limit
             sl_pips = abs(signal.entry - signal.stop_loss) / 0.1
