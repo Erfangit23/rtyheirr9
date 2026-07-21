@@ -35,6 +35,7 @@ class Signal:
     take_profits: list[float] = field(default_factory=list)
     raw_text: str = ""
     source_channel: str = ""
+    entries: list[float] = field(default_factory=list)  # For dual-entry signals
 
     def __repr__(self):
         tps = ", ".join(str(tp) for tp in self.take_profits)
@@ -178,10 +179,75 @@ def parse_format3(text: str, channel: str) -> Optional[Signal]:
     )
 
 
+def parse_format4(text: str, channel: str) -> Optional[Signal]:
+    """Parse Format 4: BrianTradingForex style with dual entry zone.
+
+    Example:
+    Gold Trader Alliance ❤
+    Trade Setup #04 - July 21
+
+    🧑‍💻 XAU/USD Buy 4063 - 4060
+    📌 Stoploss : 4057
+    - Take Profit : 4068 ( 70pips )
+    - Take Profit : 4085 ( 380pips )
+    """
+    full_text = text.strip()
+
+    # Direction and entries: XAU/USD Buy 4063 - 4060 or XAUUSD Buy 4063 - 4060
+    # Can have emoji before it
+    dir_match = re.search(
+        r"XAU[/\s]*USD\s+(BUY|SELL)\s+([\d.]+)\s*[-–]\s*([\d.]+)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not dir_match:
+        return None
+
+    direction = dir_match.group(1).upper()
+    entry1 = float(dir_match.group(2))
+    entry2 = float(dir_match.group(3))
+    # Ensure entry1 is the closer-to-market one (higher for buy, lower for sell)
+    # Use entry1 as the primary entry
+    primary_entry = entry1
+
+    # Stop loss: Stoploss : 4057, SL : 4057, etc.
+    sl_match = re.search(
+        r"(?:STOP\s*LOSS|SL|STOPLOSS)\s*:?\s*([\d.]+)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not sl_match:
+        return None
+    stop_loss = float(sl_match.group(1))
+
+    # Take profits: Take Profit : 4068, Take Profit : 4085
+    tp_matches = re.findall(
+        r"TAKE\s*PROFIT\s*:?\s*([\d.]+)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not tp_matches:
+        return None
+
+    take_profits = [float(tp) for tp in tp_matches]
+
+    return Signal(
+        symbol="XAUUSD",
+        direction=direction,
+        entry=primary_entry,
+        stop_loss=stop_loss,
+        take_profits=take_profits,
+        raw_text=text,
+        source_channel=channel,
+        entries=[entry1, entry2],
+    )
+
+
 PARSERS = {
     "format1": parse_format1,
     "format2": parse_format2,
     "format3": parse_format3,
+    "format4": parse_format4,
 }
 
 

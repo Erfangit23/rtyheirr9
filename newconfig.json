@@ -32,6 +32,10 @@
     {
       "id": "@GoLDVipSigbal",
       "format": "format3"
+    },
+    {
+      "id": "@BrianTradingForex",
+      "format": "format4"
     }
   ],
   "trading": {

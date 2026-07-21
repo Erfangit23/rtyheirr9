@@ -59,6 +59,7 @@ class TradeManager:
         self.logger = logger or logging.getLogger("xau_trader")
         self.trades: list[TradeRecord] = []
         self.trades_file = "data/trades.json"
+        self._linked_orders = {}  # ticket -> {partner_ticket, breakeven_price}
         self._load_trades()
 
     def _load_trades(self):
@@ -127,15 +128,16 @@ class TradeManager:
 
         # Determine TP index and whether to place split orders
         # Per-channel TP override: gold_alicxzos110 uses TP3, others use default
-        # Gulljanali17: place TWO orders (TP1 and TP2), each 0.01 lot
+        # BrianTradingForex: dual entry orders (entry1->TP1, entry2->TP2) with breakeven
         split_orders = False
+        dual_entry = False
         if signal.source_channel == "@gold_alicxzos110":
             tp_index = 3
             self.logger.info("Channel @gold_alicxzos110: using TP3 override")
-        elif signal.source_channel == "@Gulljanali17":
-            split_orders = True
+        elif signal.source_channel == "@BrianTradingForex":
+            dual_entry = True
             tp_index = 2
-            self.logger.info("Channel @Gulljanali17: placing split orders (TP1 + TP2)")
+            self.logger.info("Channel @BrianTradingForex: placing dual entry orders (entry1->TP1, entry2->TP2)")
         else:
             tp_index = self.settings.default_tp_index
         if tp_index > len(signal.take_profits):
@@ -145,47 +147,59 @@ class TradeManager:
                 f"({len(signal.take_profits)}). Using TP{tp_index}."
             )
 
-        if split_orders:
-            # Place two separate orders: one with TP1, one with TP2
-            # Both use same entry and SL, each with lot_size
+        if dual_entry:
+            # Place two separate orders with different entries and TPs
+            # Order 1: Entry1, TP1, SL
+            # Order 2: Entry2, TP2, SL
+            # When Order 1 TP hits, move Order 2 SL to Entry2 (breakeven)
             results = []
-            for tp_idx in [1, 2]:
-                if tp_idx > len(signal.take_profits):
+            for entry_idx, tp_idx in [(1, 1), (2, 2)]:
+                if entry_idx > len(signal.entries) or tp_idx > len(signal.take_profits):
                     break
+                # Create a modified signal with specific entry
+                from signal_parser import Signal as Sig
+                mod_signal = Sig(
+                    symbol=signal.symbol,
+                    direction=signal.direction,
+                    entry=signal.entries[entry_idx - 1],
+                    stop_loss=signal.stop_loss,
+                    take_profits=signal.take_profits,
+                    raw_text=signal.raw_text,
+                    source_channel=signal.source_channel,
+                )
                 ticket = self.mt5.place_limit_order(
-                    signal=signal,
+                    signal=mod_signal,
                     lot_size=self.settings.lot_size,
                     tp_index=tp_idx,
                     max_sl_pips=self.settings.max_sl_pips,
                 )
-                results.append((tp_idx, ticket))
+                results.append((entry_idx, tp_idx, mod_signal.entry, ticket))
 
             now = datetime.now(timezone.utc).isoformat()
 
-            # Check if all failed
-            all_failed = all(t is None for _, t in results)
-            all_rejected = all(t == -1 for _, t in results)
+            # Check results
+            all_failed = all(t is None for _, _, _, t in results)
+            all_rejected = all(t == -1 for _, _, _, t in results)
 
             if all_failed:
-                self.logger.error("Both split orders failed to place.")
+                self.logger.error("Both dual entry orders failed to place.")
                 await self._report(
                     f"❌ Both orders FAILED to place:\n"
-                    f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
-                    f"SL={signal.stop_loss}\n"
+                    f"{signal.direction} {signal.symbol}\n"
                     f"Source: {signal.source_channel}\n"
                     f"Check MT5 connection and logs."
                 )
                 return
 
             if all_rejected:
-                sl_pips = abs(signal.entry - signal.stop_loss) / 0.1
-                for tp_idx, _ in results:
+                sl_pips = abs(signal.entries[0] - signal.stop_loss) / 0.1
+                for entry_idx, tp_idx, entry_val, _ in results:
                     record = TradeRecord(
                         ticket=0,
                         channel=signal.source_channel,
                         symbol=signal.symbol,
                         direction=signal.direction,
-                        entry=signal.entry,
+                        entry=entry_val,
                         sl=signal.stop_loss,
                         tp=signal.take_profits[tp_idx - 1] if signal.take_profits else 0,
                         tp_index=tp_idx,
@@ -199,26 +213,28 @@ class TradeManager:
                 self._save_trades()
                 await self._report(
                     f"🚫 Both orders REJECTED - SL too large:\n"
-                    f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                    f"{signal.direction} {signal.symbol}\n"
                     f"SL={signal.stop_loss} ({sl_pips:.0f} pips > {self.settings.max_sl_pips} max)\n"
                     f"Source: {signal.source_channel}"
                 )
                 return
 
-            # Process results
-            report_lines = [f"✅ Split orders placed ({signal.source_channel}):"]
-            for tp_idx, ticket in results:
+            # Process results and link orders for breakeven tracking
+            report_lines = [f"✅ Dual entry orders placed ({signal.source_channel}):"]
+            tickets = []
+            for entry_idx, tp_idx, entry_val, ticket in results:
+                tickets.append(ticket)
                 if ticket is None:
-                    report_lines.append(f"  TP{tp_idx}: ❌ FAILED")
+                    report_lines.append(f"  Entry{entry_idx} @ {entry_val} TP{tp_idx}: ❌ FAILED")
                     continue
                 if ticket == -1:
-                    report_lines.append(f"  TP{tp_idx}: 🚫 REJECTED (SL too large)")
+                    report_lines.append(f"  Entry{entry_idx} @ {entry_val} TP{tp_idx}: 🚫 REJECTED (SL too large)")
                     record = TradeRecord(
                         ticket=0,
                         channel=signal.source_channel,
                         symbol=signal.symbol,
                         direction=signal.direction,
-                        entry=signal.entry,
+                        entry=entry_val,
                         sl=signal.stop_loss,
                         tp=signal.take_profits[tp_idx - 1] if signal.take_profits else 0,
                         tp_index=tp_idx,
@@ -237,7 +253,7 @@ class TradeManager:
                     channel=signal.source_channel,
                     symbol=signal.symbol,
                     direction=signal.direction,
-                    entry=signal.entry,
+                    entry=entry_val,
                     sl=signal.stop_loss,
                     tp=signal.take_profits[tp_idx - 1] if signal.take_profits else 0,
                     tp_index=tp_idx,
@@ -249,12 +265,23 @@ class TradeManager:
                 )
                 self.trades.append(record)
                 report_lines.append(
-                    f"  #{ticket} TP{tp_idx} @ {signal.take_profits[tp_idx - 1]}"
+                    f"  #{ticket} Entry{entry_idx} @ {entry_val} TP{tp_idx} @ {signal.take_profits[tp_idx - 1]}"
+                )
+
+            # Store linked tickets for breakeven: when order1 TP hits, move order2 SL to entry2
+            if len(tickets) >= 2 and tickets[0] > 0 and tickets[1] > 0:
+                self._linked_orders[tickets[0]] = {
+                    "partner_ticket": tickets[1],
+                    "breakeven_price": signal.entries[1],  # move SL to entry2
+                }
+                self.logger.info(
+                    f"Linked orders: #{tickets[0]} (TP1) -> #{tickets[1]} breakeven @ {signal.entries[1]}"
                 )
 
             self._save_trades()
             report_lines.append(
-                f"Entry: {signal.entry} | SL: {signal.stop_loss} | Lot: {self.settings.lot_size} each"
+                f"SL: {signal.stop_loss} | Lot: {self.settings.lot_size} each\n"
+                f"When TP1 hits, Order 2 SL moves to Entry2 (risk-free)"
             )
             await self._report("\n".join(report_lines))
             return
@@ -387,6 +414,27 @@ class TradeManager:
                         f"Source: {trade.channel}"
                     )
                     updated = True
+
+                    # Breakeven: if this trade has a linked partner, move partner SL to entry
+                    if trade.status == TradeStatus.TP_HIT.value and trade.ticket in self._linked_orders:
+                        link = self._linked_orders[trade.ticket]
+                        partner_ticket = link["partner_ticket"]
+                        breakeven_price = link["breakeven_price"]
+                        self.logger.info(
+                            f"TP hit on #{trade.ticket}, moving partner #{partner_ticket} "
+                            f"SL to breakeven @ {breakeven_price}"
+                        )
+                        moved = self._modify_position_sl(partner_ticket, breakeven_price)
+                        if moved:
+                            await self._report(
+                                f"🛡️ Breakeven applied:\n"
+                                f"#{partner_ticket} SL moved to {breakeven_price} (entry)\n"
+                                f"Position is now risk-free"
+                            )
+                        else:
+                            self.logger.warning(
+                                f"Failed to move SL for partner #{partner_ticket}"
+                            )
                 else:
                     # Might have been cancelled manually
                     trade.status = TradeStatus.CANCELLED.value
@@ -496,3 +544,35 @@ class TradeManager:
                 await self.report_callback(message)
             except Exception as e:
                 self.logger.error(f"Report callback error: {e}")
+
+    def _modify_position_sl(self, ticket: int, new_sl: float) -> bool:
+        """Modify a position's stop loss by ticket."""
+        if not self.mt5.ensure_connected():
+            return False
+        try:
+            import MetaTrader5 as mt5
+            # Find the position
+            positions = mt5.positions_get(ticket=ticket)
+            if not positions or len(positions) == 0:
+                self.logger.warning(f"Position #{ticket} not found for SL modify")
+                return False
+            pos = positions[0]
+            request = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "position": ticket,
+                "symbol": pos.symbol,
+                "sl": round(new_sl, mt5.symbol_info(pos.symbol).digits),
+                "tp": pos.tp,
+            }
+            result = mt5.order_send(request)
+            if result is None:
+                self.logger.error(f"SL modify returned None: {mt5.last_error()}")
+                return False
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                self.logger.error(f"SL modify failed: retcode={result.retcode}")
+                return False
+            self.logger.info(f"SL modified for #{ticket}: {new_sl}")
+            return True
+        except Exception as e:
+            self.logger.error(f"SL modify error: {e}")
+            return False
