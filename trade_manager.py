@@ -148,32 +148,65 @@ class TradeManager:
             )
 
         if dual_entry:
-            # Place two separate orders with different entries and TPs
-            # Order 1: Entry1, TP1, SL
-            # Order 2: Entry2, TP2, SL
-            # When Order 1 TP hits, move Order 2 SL to Entry2 (breakeven)
+            # Place two separate orders with different entries and TPs.
+            # The closer-to-market entry gets TP1 (fills first).
+            # The farther entry gets TP2 (fills later).
+            # When the first order hits TP1, move the second order's SL to its entry (breakeven).
+            if len(signal.entries) < 2 or len(signal.take_profits) < 2:
+                self.logger.warning("Not enough entries/TPs for dual entry order, skipping.")
+                return
+
+            entry1, entry2 = signal.entries[0], signal.entries[1]
+            tp1_price, tp2_price = signal.take_profits[0], signal.take_profits[1]
+
+            # Determine which entry is closer to market (fills first)
+            # For BUY: higher entry = closer to market (price drops to hit it)
+            # For SELL: lower entry = closer to market (price rises to hit it)
+            if signal.direction.upper() == "BUY":
+                # Higher entry fills first -> TP1, lower entry fills later -> TP2
+                if entry1 >= entry2:
+                    first_entry, first_tp = entry1, tp1_price
+                    second_entry, second_tp = entry2, tp2_price
+                else:
+                    first_entry, first_tp = entry2, tp1_price
+                    second_entry, second_tp = entry1, tp2_price
+            else:  # SELL
+                # Lower entry fills first -> TP1, higher entry fills later -> TP2
+                if entry1 <= entry2:
+                    first_entry, first_tp = entry1, tp1_price
+                    second_entry, second_tp = entry2, tp2_price
+                else:
+                    first_entry, first_tp = entry2, tp1_price
+                    second_entry, second_tp = entry1, tp2_price
+
+            self.logger.info(
+                f"Dual entry: Order1 entry={first_entry} TP={first_tp} (closer, fills first), "
+                f"Order2 entry={second_entry} TP={second_tp} (farther, breakeven on TP1)"
+            )
+
+            # Place both orders
+            from signal_parser import Signal as Sig
             results = []
-            for entry_idx, tp_idx in [(1, 1), (2, 2)]:
-                if entry_idx > len(signal.entries) or tp_idx > len(signal.take_profits):
-                    break
-                # Create a modified signal with specific entry
-                from signal_parser import Signal as Sig
+            for entry_val, tp_val, label in [
+                (first_entry, first_tp, "first"),
+                (second_entry, second_tp, "second"),
+            ]:
                 mod_signal = Sig(
                     symbol=signal.symbol,
                     direction=signal.direction,
-                    entry=signal.entries[entry_idx - 1],
+                    entry=entry_val,
                     stop_loss=signal.stop_loss,
-                    take_profits=signal.take_profits,
+                    take_profits=[tp_val],  # Single TP
                     raw_text=signal.raw_text,
                     source_channel=signal.source_channel,
                 )
                 ticket = self.mt5.place_limit_order(
                     signal=mod_signal,
                     lot_size=self.settings.lot_size,
-                    tp_index=tp_idx,
+                    tp_index=1,  # Only 1 TP in the modified signal
                     max_sl_pips=self.settings.max_sl_pips,
                 )
-                results.append((entry_idx, tp_idx, mod_signal.entry, ticket))
+                results.append((label, entry_val, tp_val, ticket))
 
             now = datetime.now(timezone.utc).isoformat()
 
@@ -193,7 +226,7 @@ class TradeManager:
 
             if all_rejected:
                 sl_pips = abs(signal.entries[0] - signal.stop_loss) / 0.1
-                for entry_idx, tp_idx, entry_val, _ in results:
+                for label, entry_val, tp_val, _ in results:
                     record = TradeRecord(
                         ticket=0,
                         channel=signal.source_channel,
@@ -201,8 +234,8 @@ class TradeManager:
                         direction=signal.direction,
                         entry=entry_val,
                         sl=signal.stop_loss,
-                        tp=signal.take_profits[tp_idx - 1] if signal.take_profits else 0,
-                        tp_index=tp_idx,
+                        tp=tp_val,
+                        tp_index=1,
                         lot_size=self.settings.lot_size,
                         status=TradeStatus.REJECTED_SL.value,
                         timestamp=now,
@@ -222,13 +255,20 @@ class TradeManager:
             # Process results and link orders for breakeven tracking
             report_lines = [f"✅ Dual entry orders placed ({signal.source_channel}):"]
             tickets = []
-            for entry_idx, tp_idx, entry_val, ticket in results:
+            first_ticket = None
+            second_ticket = None
+            for label, entry_val, tp_val, ticket in results:
                 tickets.append(ticket)
+                if label == "first":
+                    first_ticket = ticket if ticket and ticket > 0 else None
+                else:
+                    second_ticket = ticket if ticket and ticket > 0 else None
+
                 if ticket is None:
-                    report_lines.append(f"  Entry{entry_idx} @ {entry_val} TP{tp_idx}: ❌ FAILED")
+                    report_lines.append(f"  [{label}] Entry @ {entry_val} TP @ {tp_val}: ❌ FAILED")
                     continue
                 if ticket == -1:
-                    report_lines.append(f"  Entry{entry_idx} @ {entry_val} TP{tp_idx}: 🚫 REJECTED (SL too large)")
+                    report_lines.append(f"  [{label}] Entry @ {entry_val} TP @ {tp_val}: 🚫 REJECTED (SL too large)")
                     record = TradeRecord(
                         ticket=0,
                         channel=signal.source_channel,
@@ -236,8 +276,8 @@ class TradeManager:
                         direction=signal.direction,
                         entry=entry_val,
                         sl=signal.stop_loss,
-                        tp=signal.take_profits[tp_idx - 1] if signal.take_profits else 0,
-                        tp_index=tp_idx,
+                        tp=tp_val,
+                        tp_index=1,
                         lot_size=self.settings.lot_size,
                         status=TradeStatus.REJECTED_SL.value,
                         timestamp=now,
@@ -255,8 +295,8 @@ class TradeManager:
                     direction=signal.direction,
                     entry=entry_val,
                     sl=signal.stop_loss,
-                    tp=signal.take_profits[tp_idx - 1] if signal.take_profits else 0,
-                    tp_index=tp_idx,
+                    tp=tp_val,
+                    tp_index=1,
                     lot_size=self.settings.lot_size,
                     status=TradeStatus.PENDING.value,
                     timestamp=now,
@@ -264,24 +304,25 @@ class TradeManager:
                     tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else 0,
                 )
                 self.trades.append(record)
+                order_desc = "closer entry (fills first)" if label == "first" else "farther entry (breakeven)"
                 report_lines.append(
-                    f"  #{ticket} Entry{entry_idx} @ {entry_val} TP{tp_idx} @ {signal.take_profits[tp_idx - 1]}"
+                    f"  #{ticket} [{label}] Entry @ {entry_val} TP @ {tp_val} ({order_desc})"
                 )
 
-            # Store linked tickets for breakeven: when order1 TP hits, move order2 SL to entry2
-            if len(tickets) >= 2 and tickets[0] > 0 and tickets[1] > 0:
-                self._linked_orders[tickets[0]] = {
-                    "partner_ticket": tickets[1],
-                    "breakeven_price": signal.entries[1],  # move SL to entry2
+            # Link orders for breakeven: when first order hits TP, move second order SL to its entry
+            if first_ticket and second_ticket:
+                self._linked_orders[first_ticket] = {
+                    "partner_ticket": second_ticket,
+                    "breakeven_price": second_entry,  # move SL to second order's entry
                 }
                 self.logger.info(
-                    f"Linked orders: #{tickets[0]} (TP1) -> #{tickets[1]} breakeven @ {signal.entries[1]}"
+                    f"Linked orders: #{first_ticket} (TP1) -> #{second_ticket} breakeven @ {second_entry}"
                 )
 
             self._save_trades()
             report_lines.append(
                 f"SL: {signal.stop_loss} | Lot: {self.settings.lot_size} each\n"
-                f"When TP1 hits, Order 2 SL moves to Entry2 (risk-free)"
+                f"When first order hits TP1, second order SL moves to entry (risk-free)"
             )
             await self._report("\n".join(report_lines))
             return
