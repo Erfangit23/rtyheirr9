@@ -41,6 +41,12 @@ class TradeRecord:
     timestamp: str
     raw_signal: str = ""
     tp2: float = 0.0  # TP2 price for cancellation logic
+    all_tps: list = None  # All TP prices for step-up SL (gold_alicxzos110)
+    sl_step: int = 0  # Current SL step reached (0=none, 1=TP1, 2=TP2, 3=TP3)
+
+    def __post_init__(self):
+        if self.all_tps is None:
+            self.all_tps = []
 
 
 class TradeManager:
@@ -132,8 +138,8 @@ class TradeManager:
         split_orders = False
         dual_entry = False
         if signal.source_channel == "@gold_alicxzos110":
-            tp_index = 3
-            self.logger.info("Channel @gold_alicxzos110: using TP3 override")
+            tp_index = 4
+            self.logger.info("Channel @gold_alicxzos110: using TP4 as final TP, step-up SL on TP1/TP2/TP3")
         elif signal.source_channel == "@BrianTradingForex":
             dual_entry = True
             tp_index = 2
@@ -414,11 +420,13 @@ class TradeManager:
             timestamp=now,
             raw_signal=signal.raw_text[:200],
             tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else (signal.take_profits[0] if signal.take_profits else 0),
+            all_tps=list(signal.take_profits) if signal.source_channel == "@gold_alicxzos110" else [],
         )
         self.trades.append(record)
         self._save_trades()
 
-        await self._report(
+        # Build report
+        report_msg = (
             f"✅ Limit order placed:\n"
             f"#{ticket} {signal.direction} {signal.symbol}\n"
             f"Entry: {signal.entry}\n"
@@ -427,6 +435,15 @@ class TradeManager:
             f"Lot: {self.settings.lot_size}\n"
             f"Source: {signal.source_channel}"
         )
+        if signal.source_channel == "@gold_alicxzos110" and len(signal.take_profits) >= 4:
+            report_msg += (
+                f"\n\n📊 Step-up SL plan:\n"
+                f"  Price hits TP1 ({signal.take_profits[0]}) -> SL to entry ({signal.entry})\n"
+                f"  Price hits TP2 ({signal.take_profits[1]}) -> SL to TP1 ({signal.take_profits[0]})\n"
+                f"  Price hits TP3 ({signal.take_profits[2]}) -> SL to TP2 ({signal.take_profits[1]})\n"
+                f"  Price hits TP4 ({signal.take_profits[3]}) -> Position closes"
+            )
+        await self._report(report_msg)
 
     async def check_trade_updates(self):
         """Check for trade status updates (filled, TP hit, SL hit)."""
@@ -445,6 +462,63 @@ class TradeManager:
         # Check pending trades for status changes
         updated = False
         for trade in self.trades:
+            # --- Step-up SL for @gold_alicxzos110 filled positions ---
+            if (
+                trade.status == TradeStatus.FILLED.value
+                and trade.channel == "@gold_alicxzos110"
+                and trade.all_tps
+                and len(trade.all_tps) >= 4
+                and trade.sl_step < 3
+            ):
+                prices = self.mt5.get_symbol_price(trade.symbol)
+                if prices:
+                    current_bid, current_ask = prices
+                    next_step = trade.sl_step + 1
+                    target_tp = trade.all_tps[trade.sl_step]  # TP1 (step 0->1), TP2 (step 1->2), etc.
+                    new_sl = None
+
+                    if trade.direction == "BUY":
+                        # Price rising: check if bid reached TP level
+                        if current_bid >= target_tp:
+                            if next_step == 1:
+                                new_sl = trade.entry  # SL to entry
+                            elif next_step == 2:
+                                new_sl = trade.all_tps[0]  # SL to TP1
+                            elif next_step == 3:
+                                new_sl = trade.all_tps[1]  # SL to TP2
+                    elif trade.direction == "SELL":
+                        # Price falling: check if ask reached TP level
+                        if current_ask <= target_tp:
+                            if next_step == 1:
+                                new_sl = trade.entry  # SL to entry
+                            elif next_step == 2:
+                                new_sl = trade.all_tps[0]  # SL to TP1
+                            elif next_step == 3:
+                                new_sl = trade.all_tps[1]  # SL to TP2
+
+                    if new_sl is not None:
+                        self.logger.info(
+                            f"Step-up SL: #{trade.ticket} reached TP{next_step} "
+                            f"({target_tp}), moving SL to {new_sl}"
+                        )
+                        moved = self._modify_position_sl(trade.ticket, new_sl)
+                        if moved:
+                            trade.sl_step = next_step
+                            trade.sl = new_sl
+                            updated = True
+                            step_labels = {1: "entry (risk-free)", 2: f"TP1 ({trade.all_tps[0]})", 3: f"TP2 ({trade.all_tps[1]})"}
+                            await self._report(
+                                f"🛡️ SL moved to TP{next_step - 1 if next_step > 1 else 'entry'} level:\n"
+                                f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                                f"Price reached TP{next_step} ({target_tp})\n"
+                                f"SL moved to {new_sl} ({step_labels[next_step]})\n"
+                                f"Source: {trade.channel}"
+                            )
+                        else:
+                            self.logger.warning(
+                                f"Failed to move SL for #{trade.ticket} step {next_step}"
+                            )
+
             if trade.status != TradeStatus.PENDING.value:
                 continue
 
