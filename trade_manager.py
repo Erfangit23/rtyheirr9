@@ -663,6 +663,76 @@ class TradeManager:
                                     f"Failed to cancel order #{trade.ticket}"
                                 )
 
+                # For @BrianTradingForex: if pending order not filled and price hit TP (TP1),
+                # cancel BOTH orders (the move happened without us)
+                if trade.channel == "@BrianTradingForex" and trade.tp > 0:
+                    prices = self.mt5.get_symbol_price(trade.symbol)
+                    if prices:
+                        current_bid, current_ask = prices
+                        tp1 = trade.tp  # The TP set on this order
+
+                        should_cancel = False
+                        if trade.direction == "SELL":
+                            if current_ask <= tp1:
+                                should_cancel = True
+                        elif trade.direction == "BUY":
+                            if current_bid >= tp1:
+                                should_cancel = True
+
+                        if should_cancel:
+                            self.logger.info(
+                                f"BrianTradingForex: Price reached TP1 ({tp1}) for pending "
+                                f"{trade.direction} order #{trade.ticket}. Cancelling both orders."
+                            )
+                            # Cancel this order
+                            cancelled = self.mt5.cancel_order(trade.ticket)
+                            if cancelled:
+                                trade.status = TradeStatus.CANCELLED.value
+                                updated = True
+                                # Find and cancel the partner order too
+                                partner_ticket = None
+                                for key, link in self._linked_orders.items():
+                                    if key == trade.ticket or link["partner_ticket"] == trade.ticket:
+                                        partner_ticket = link["partner_ticket"] if key == trade.ticket else key
+                                        break
+                                if partner_ticket:
+                                    # Cancel partner if still pending
+                                    cancelled_partner = self.mt5.cancel_order(partner_ticket)
+                                    if cancelled_partner:
+                                        for pt in self.trades:
+                                            if pt.ticket == partner_ticket and pt.status == TradeStatus.PENDING.value:
+                                                pt.status = TradeStatus.CANCELLED.value
+                                                updated = True
+                                                break
+                                        await self._report(
+                                            f"🗑️ BOTH orders CANCELLED - price hit TP1 without filling:\n"
+                                            f"#{trade.ticket} & #{partner_ticket} {trade.direction} {trade.symbol}\n"
+                                            f"Entry: {trade.entry} (never filled)\n"
+                                            f"TP1: {tp1} was reached\n"
+                                            f"Source: {trade.channel}"
+                                        )
+                                    else:
+                                        # Partner may have been filled already — just report this one
+                                        await self._report(
+                                            f"🗑️ Order CANCELLED - price hit TP1 without filling:\n"
+                                            f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                                            f"Entry: {trade.entry} (never filled)\n"
+                                            f"TP1: {tp1} was reached\n"
+                                            f"Source: {trade.channel}"
+                                        )
+                                else:
+                                    await self._report(
+                                        f"🗑️ Order CANCELLED - price hit TP1 without filling:\n"
+                                        f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                                        f"Entry: {trade.entry} (never filled)\n"
+                                        f"TP1: {tp1} was reached\n"
+                                        f"Source: {trade.channel}"
+                                    )
+                            else:
+                                self.logger.error(
+                                    f"Failed to cancel order #{trade.ticket}"
+                                )
+
         if updated:
             self._save_trades()
 
