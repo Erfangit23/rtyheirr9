@@ -44,6 +44,10 @@
     {
       "id": "@khanbours",
       "format": "format5"
+    },
+    {
+      "id": "@Signal_Atlas",
+      "format": "format6"
     }
   ],
   "trading": {

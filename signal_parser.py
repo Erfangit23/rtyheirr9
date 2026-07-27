@@ -308,12 +308,92 @@ def parse_format5(text: str, channel: str) -> Optional[Signal]:
     )
 
 
+def parse_format6(text: str, channel: str) -> Optional[Signal]:
+    """Parse Format 6: Signal_Atlas style with emoji headers.
+
+    Example:
+    ⚜️ XAUUSD - BUY NOW
+
+    🛒 Entry : 4081
+
+    🎯 Targets :
+    4086
+    4091
+    OPEN
+
+    🔺 Stoploss : 4076
+
+    💰 @Signal_Atlas 💰
+    """
+    full_text = text.strip()
+
+    # Direction: BUY NOW or SELL NOW (after XAUUSD - )
+    dir_match = re.search(
+        r"XAUUSD\s*[-–]\s*(BUY|SELL)\s*(?:NOW)?",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not dir_match:
+        return None
+
+    direction = dir_match.group(1).upper()
+
+    # Entry: 🛒 Entry : 4081
+    entry_match = re.search(
+        r"ENTRY\s*:?\s*([\d.]+)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not entry_match:
+        return None
+    entry = float(entry_match.group(1))
+
+    # Stop loss: 🔺 Stoploss : 4076
+    sl_match = re.search(
+        r"(?:STOPLOSS|STOP\s*LOSS|SL)\s*:?\s*([\d.]+)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not sl_match:
+        return None
+    stop_loss = float(sl_match.group(1))
+
+    # Take profits: lines after "Targets :" that are pure numbers
+    # Skip "OPEN" or any non-numeric lines
+    # Find the Targets section
+    targets_match = re.search(
+        r"TARGETS?\s*:?\s*\n(.*?)(?:\n\s*\n|🔺|🛑|❌|STOP|SL|$)",
+        full_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not targets_match:
+        return None
+
+    targets_block = targets_match.group(1)
+    tp_matches = re.findall(r"^\s*(\d[\d.]*)\s*$", targets_block, re.MULTILINE)
+    if not tp_matches:
+        return None
+
+    take_profits = [float(tp) for tp in tp_matches]
+
+    return Signal(
+        symbol="XAUUSD",
+        direction=direction,
+        entry=entry,
+        stop_loss=stop_loss,
+        take_profits=take_profits,
+        raw_text=text,
+        source_channel=channel,
+    )
+
+
 PARSERS = {
     "format1": parse_format1,
     "format2": parse_format2,
     "format3": parse_format3,
     "format4": parse_format4,
     "format5": parse_format5,
+    "format6": parse_format6,
 }
 
 
