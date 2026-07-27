@@ -166,7 +166,30 @@ class TradeManager:
                 return
 
             entry1, entry2 = signal.entries[0], signal.entries[1]
-            tp1_price, tp2_price = signal.take_profits[0], signal.take_profits[1]
+            tp1_price = signal.take_profits[0]
+
+            # Cap TP2 at 150 pips profit from the second entry
+            pip_size = 0.1  # Gold: 1 pip = 0.1 price units
+            max_tp_pips = 150
+            if signal.direction.upper() == "BUY":
+                tp2_price_capped = entry2 + (max_tp_pips * pip_size)
+            else:  # SELL
+                tp2_price_capped = entry2 - (max_tp_pips * pip_size)
+            # Use channel TP2 if it's closer than 150 pips, otherwise use capped
+            if len(signal.take_profits) >= 2:
+                channel_tp2 = signal.take_profits[1]
+                if signal.direction.upper() == "BUY":
+                    tp2_price = min(channel_tp2, tp2_price_capped)
+                else:
+                    tp2_price = max(channel_tp2, tp2_price_capped)
+            else:
+                tp2_price = tp2_price_capped
+
+            self.logger.info(
+                f"BrianTradingForex: TP2 capped at 150 pips: {tp2_price} "
+                f"(channel TP2={signal.take_profits[1] if len(signal.take_profits) >= 2 else 'N/A'}, "
+                f"capped={tp2_price_capped})"
+            )
 
             # Determine which entry is closer to market (fills first)
             # For BUY: higher entry = closer to market (price drops to hit it)
@@ -190,7 +213,7 @@ class TradeManager:
 
             self.logger.info(
                 f"Dual entry: Order1 entry={first_entry} TP={first_tp} (closer, fills first), "
-                f"Order2 entry={second_entry} TP={second_tp} (farther, breakeven on TP1)"
+                f"Order2 entry={second_entry} TP={tp2_price} (farther, breakeven on TP1, max 150 pips)"
             )
 
             # Place both orders
@@ -566,8 +589,18 @@ class TradeManager:
                             f"TP hit on #{trade.ticket}, moving partner #{partner_ticket} "
                             f"SL to breakeven @ {breakeven_price}"
                         )
+                        # Try modifying as position first, then as pending order
                         moved = self._modify_position_sl(partner_ticket, breakeven_price)
+                        if not moved:
+                            # Partner might still be a pending order
+                            moved = self._modify_order_sl(partner_ticket, breakeven_price)
                         if moved:
+                            # Update the partner trade record
+                            for pt in self.trades:
+                                if pt.ticket == partner_ticket:
+                                    pt.sl = breakeven_price
+                                    updated = True
+                                    break
                             await self._report(
                                 f"🛡️ Breakeven applied:\n"
                                 f"#{partner_ticket} SL moved to {breakeven_price} (entry)\n"
@@ -575,7 +608,8 @@ class TradeManager:
                             )
                         else:
                             self.logger.warning(
-                                f"Failed to move SL for partner #{partner_ticket}"
+                                f"Failed to move SL for partner #{partner_ticket} "
+                                f"(may not be filled yet, will retry next cycle)"
                             )
                 else:
                     # Might have been cancelled manually
@@ -689,12 +723,11 @@ class TradeManager:
                 self.logger.error(f"Report callback error: {e}")
 
     def _modify_position_sl(self, ticket: int, new_sl: float) -> bool:
-        """Modify a position's stop loss by ticket."""
+        """Modify an open position's stop loss by ticket."""
         if not self.mt5.ensure_connected():
             return False
         try:
             import MetaTrader5 as mt5
-            # Find the position
             positions = mt5.positions_get(ticket=ticket)
             if not positions or len(positions) == 0:
                 self.logger.warning(f"Position #{ticket} not found for SL modify")
@@ -714,8 +747,43 @@ class TradeManager:
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 self.logger.error(f"SL modify failed: retcode={result.retcode}")
                 return False
-            self.logger.info(f"SL modified for #{ticket}: {new_sl}")
+            self.logger.info(f"SL modified for position #{ticket}: {new_sl}")
             return True
         except Exception as e:
             self.logger.error(f"SL modify error: {e}")
+            return False
+
+    def _modify_order_sl(self, ticket: int, new_sl: float) -> bool:
+        """Modify a pending order's stop loss by ticket."""
+        if not self.mt5.ensure_connected():
+            return False
+        try:
+            import MetaTrader5 as mt5
+            orders = mt5.orders_get(ticket=ticket)
+            if not orders or len(orders) == 0:
+                self.logger.warning(f"Pending order #{ticket} not found for SL modify")
+                return False
+            order = orders[0]
+            request = {
+                "action": mt5.TRADE_ACTION_MODIFY,
+                "order": ticket,
+                "symbol": order.symbol,
+                "price": order.price_open,
+                "sl": round(new_sl, mt5.symbol_info(order.symbol).digits),
+                "tp": order.tp,
+                "expiration": order.time_expiration,
+                "type_time": order.type_time,
+                "type_filling": order.type_filling,
+            }
+            result = mt5.order_send(request)
+            if result is None:
+                self.logger.error(f"Order SL modify returned None: {mt5.last_error()}")
+                return False
+            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                self.logger.error(f"Order SL modify failed: retcode={result.retcode}")
+                return False
+            self.logger.info(f"SL modified for pending order #{ticket}: {new_sl}")
+            return True
+        except Exception as e:
+            self.logger.error(f"Order SL modify error: {e}")
             return False
