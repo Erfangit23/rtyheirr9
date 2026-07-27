@@ -243,11 +243,77 @@ def parse_format4(text: str, channel: str) -> Optional[Signal]:
     )
 
 
+def parse_format5(text: str, channel: str) -> Optional[Signal]:
+    """Parse Format 5: khanbours style with Persian text.
+
+    Example:
+    XAUUSD ( اسکلپ )
+
+    Market price : 4090
+
+    Buy now : 4090 - 4086
+
+    Tp1 : 4096
+    Tp2 : 4106
+    Tp3 : 4122
+    Tp4 : open
+
+    Sl : 4080 ( 80 pip )
+    """
+    full_text = text.strip()
+
+    # Direction and entry: Buy now : 4090 - 4086  or  Sell now : 4090 - 4086
+    # Can also be single entry: Buy now : 4090
+    dir_match = re.search(
+        r"(?:BUY|SELL)\s+NOW\s*:?\s*([\d.]+)(?:\s*[-–]\s*([\d.]+))?",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not dir_match:
+        return None
+
+    direction = dir_match.group(0).split()[0].upper()  # BUY or SELL
+    entry = float(dir_match.group(1))
+
+    # Stop loss: Sl : 4080 ( 80 pip )
+    sl_match = re.search(
+        r"(?:SL|STOP\s*LOSS)\s*:?\s*([\d.]+)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not sl_match:
+        return None
+    stop_loss = float(sl_match.group(1))
+
+    # Take profits: Tp1 : 4096, Tp2 : 4106, etc.
+    # Skip "open" as a TP value
+    tp_matches = re.findall(
+        r"TP\s*\d+\s*:?\s*(\d[\d.]+)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not tp_matches:
+        return None
+
+    take_profits = [float(tp) for tp in tp_matches]
+
+    return Signal(
+        symbol="XAUUSD",
+        direction=direction,
+        entry=entry,
+        stop_loss=stop_loss,
+        take_profits=take_profits,
+        raw_text=text,
+        source_channel=channel,
+    )
+
+
 PARSERS = {
     "format1": parse_format1,
     "format2": parse_format2,
     "format3": parse_format3,
     "format4": parse_format4,
+    "format5": parse_format5,
 }
 
 

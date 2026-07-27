@@ -40,6 +40,10 @@
     {
       "id": "@BrianTradingForex",
       "format": "format4"
+    },
+    {
+      "id": "@khanbours",
+      "format": "format5"
     }
   ],
   "trading": {

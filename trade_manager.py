@@ -140,6 +140,9 @@ class TradeManager:
         if signal.source_channel == "@gold_alicxzos110":
             tp_index = 4
             self.logger.info("Channel @gold_alicxzos110: using TP4 as final TP, step-up SL on TP1/TP2/TP3")
+        elif signal.source_channel == "@khanbours":
+            tp_index = 1
+            self.logger.info("Channel @khanbours: using TP1")
         elif signal.source_channel == "@BrianTradingForex":
             dual_entry = True
             tp_index = 2
