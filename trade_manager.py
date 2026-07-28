@@ -367,6 +367,88 @@ class TradeManager:
         if ticket == -10015:
             # Invalid price — market already moved past entry
             self.logger.warning(f"Order rejected - invalid price (market moved past entry)")
+
+            # For @Gulljanali17: if market is within 10 pips of entry, place market order
+            if signal.source_channel == "@Gulljanali17":
+                prices = self.mt5.get_symbol_price(signal.symbol)
+                if prices:
+                    current_bid, current_ask = prices
+                    if signal.direction.upper() == "BUY":
+                        diff_pips = abs(current_ask - signal.entry) / 0.1
+                    else:
+                        diff_pips = abs(current_bid - signal.entry) / 0.1
+
+                    self.logger.info(
+                        f"@Gulljanali17: Market-entry diff = {diff_pips:.1f} pips"
+                    )
+
+                    if diff_pips <= 10:
+                        self.logger.info(
+                            f"@Gulljanali17: Within 10 pips, placing MARKET order"
+                        )
+                        mkt_ticket = self.mt5.place_market_order(
+                            signal=signal,
+                            lot_size=self.settings.lot_size,
+                            tp_index=tp_index,
+                            max_sl_pips=self.settings.max_sl_pips,
+                        )
+
+                        if mkt_ticket is not None and mkt_ticket > 0:
+                            # Market order succeeded — treat as filled position
+                            record = TradeRecord(
+                                ticket=mkt_ticket,
+                                channel=signal.source_channel,
+                                symbol=signal.symbol,
+                                direction=signal.direction,
+                                entry=signal.entry,
+                                sl=signal.stop_loss,
+                                tp=signal.take_profits[tp_index - 1] if signal.take_profits else 0,
+                                tp_index=tp_index,
+                                lot_size=self.settings.lot_size,
+                                status=TradeStatus.FILLED.value,
+                                timestamp=now,
+                                raw_signal=signal.raw_text[:200],
+                                tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else 0,
+                            )
+                            self.trades.append(record)
+                            self._save_trades()
+                            await self._report(
+                                f"✅ MARKET order placed (within 10 pips):\n"
+                                f"#{mkt_ticket} {signal.direction} {signal.symbol}\n"
+                                f"Signal Entry: {signal.entry}\n"
+                                f"Market Entry: ~{current_ask if signal.direction.upper() == 'BUY' else current_bid}\n"
+                                f"Diff: {diff_pips:.1f} pips\n"
+                                f"SL: {signal.stop_loss}\n"
+                                f"TP: {signal.take_profits[tp_index-1]} (TP{tp_index})\n"
+                                f"Lot: {self.settings.lot_size}\n"
+                                f"Source: {signal.source_channel}"
+                            )
+                            return
+                        elif mkt_ticket == -1:
+                            await self._report(
+                                f"🚫 Market order REJECTED - SL too large:\n"
+                                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                                f"Source: {signal.source_channel}"
+                            )
+                            return
+                        else:
+                            self.logger.error(
+                                f"Market order failed for @Gulljanali17: ticket={mkt_ticket}"
+                            )
+                            await self._report(
+                                f"❌ Market order FAILED:\n"
+                                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                                f"Source: {signal.source_channel}"
+                            )
+                            return
+                    else:
+                        await self._report(
+                            f"⏭️ Order SKIPPED - market {diff_pips:.0f} pips from entry (>10):\n"
+                            f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                            f"Source: {signal.source_channel}"
+                        )
+                        return
+
             await self._report(
                 f"⏭️ Order SKIPPED - market already past entry:\n"
                 f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"

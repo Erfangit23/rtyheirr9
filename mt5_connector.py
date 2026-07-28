@@ -244,6 +244,128 @@ class MT5Connector:
         )
         return result.order
 
+    def place_market_order(
+        self,
+        signal: Signal,
+        lot_size: float,
+        tp_index: int = 2,
+        max_sl_pips: int = 150,
+    ) -> Optional[int]:
+        """
+        Place a market order based on the signal.
+
+        Used when the limit price would be invalid (market already moved past entry).
+        Executes immediately at current market price.
+
+        Returns the position ticket, or None on failure, or -1 if rejected due to SL limit,
+        or -10015 if SL would be invalid at market price.
+        """
+        if not self.ensure_connected():
+            return None
+
+        symbol = signal.symbol
+        direction = signal.direction.upper()
+
+        # Ensure symbol is available
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            self.logger.error(f"Symbol {symbol} not found in MT5.")
+            return None
+
+        if not symbol_info.visible:
+            if not mt5.symbol_select(symbol, True):
+                self.logger.error(f"Failed to select symbol {symbol}.")
+                return None
+
+        # Determine order type and execution price
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            self.logger.error(f"Failed to get tick for {symbol}")
+            return None
+
+        if direction == "BUY":
+            order_type = mt5.ORDER_TYPE_BUY
+            execution_price = tick.ask
+        elif direction == "SELL":
+            order_type = mt5.ORDER_TYPE_SELL
+            execution_price = tick.bid
+        else:
+            self.logger.error(f"Unknown direction: {direction}")
+            return None
+
+        # Get TP
+        tp_index = max(1, min(tp_index, len(signal.take_profits)))
+        tp_price = signal.take_profits[tp_index - 1]
+
+        # Validate SL distance from execution price
+        point = symbol_info.point
+        pip_size = point * 10 if point < 0.01 else 0.1
+        sl_distance_pips_calc = abs(execution_price - signal.stop_loss) / pip_size
+
+        self.logger.info(
+            f"Market order SL check: {abs(execution_price - signal.stop_loss)} price units "
+            f"= {sl_distance_pips_calc:.1f} pips (max: {max_sl_pips})"
+        )
+
+        if sl_distance_pips_calc > max_sl_pips:
+            self.logger.warning(
+                f"SL distance {sl_distance_pips_calc:.1f} pips exceeds max {max_sl_pips} pips. "
+                f"Market order NOT placed."
+            )
+            return -1
+
+        # Normalize prices
+        digits = symbol_info.digits
+        sl_price = round(signal.stop_loss, digits)
+        tp_price_norm = round(tp_price, digits)
+        exec_price = round(execution_price, digits)
+
+        # Fill mode
+        filling = mt5.symbol_info(symbol)
+        filling_type = mt5.ORDER_FILLING_RETURN
+        if filling:
+            filling_type = filling.filling_mode
+
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot_size,
+            "type": order_type,
+            "price": exec_price,
+            "sl": sl_price,
+            "tp": tp_price_norm,
+            "deviation": 20,
+            "magic": 779900,
+            "comment": f"XAU-Bot-MKT|{signal.source_channel}",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": filling_type,
+        }
+
+        self.logger.info(
+            f"Placing MARKET order: {direction} {symbol} "
+            f"vol={lot_size} price={exec_price} "
+            f"sl={sl_price} tp={tp_price_norm} (TP#{tp_index})"
+        )
+
+        result = mt5.order_send(request)
+
+        if result is None:
+            self.logger.error(f"order_send returned None: {mt5.last_error()}")
+            return None
+
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            self.logger.error(
+                f"Market order failed: retcode={result.retcode} "
+                f"comment={result.comment}"
+            )
+            return -result.retcode
+
+        self.logger.info(
+            f"Market order placed successfully: ticket={result.order} "
+            f"retcode={result.retcode}"
+        )
+        return result.order
+
     def cancel_order(self, ticket: int) -> bool:
         """Cancel a pending order by ticket."""
         if not self.ensure_connected():
