@@ -171,13 +171,26 @@ class TradeManager:
             entry1, entry2 = signal.entries[0], signal.entries[1]
             tp1_price = signal.take_profits[0]
 
+            # Adjust TPs 10 pips closer to entry to increase fill probability
+            # For BUY: lower the TP by 1.0 (10 pips)
+            # For SELL: raise the TP by 1.0 (10 pips)
+            tp_adjustment = 1.0  # 10 pips in price units for gold
+            if signal.direction.upper() == "BUY":
+                tp1_price = tp1_price - tp_adjustment
+                self.logger.info(f"TP1 adjusted -10 pips: {signal.take_profits[0]} -> {tp1_price}")
+            else:  # SELL
+                tp1_price = tp1_price + tp_adjustment
+                self.logger.info(f"TP1 adjusted +10 pips: {signal.take_profits[0]} -> {tp1_price}")
+
             # Cap TP2 at 150 pips profit from the second entry
             pip_size = 0.1  # Gold: 1 pip = 0.1 price units
             max_tp_pips = 150
             if signal.direction.upper() == "BUY":
                 tp2_price_capped = entry2 + (max_tp_pips * pip_size)
+                tp2_price_capped = tp2_price_capped - tp_adjustment  # Also adjust closer
             else:  # SELL
                 tp2_price_capped = entry2 - (max_tp_pips * pip_size)
+                tp2_price_capped = tp2_price_capped + tp_adjustment  # Also adjust closer
             # Use channel TP2 if it's closer than 150 pips, otherwise use capped
             if len(signal.take_profits) >= 2:
                 channel_tp2 = signal.take_profits[1]
@@ -572,6 +585,52 @@ class TradeManager:
 
         # Check pending trades for status changes
         updated = False
+
+        # First: retry breakeven for linked orders that failed previously
+        # This runs every cycle to catch cases where the partner wasn't filled yet
+        for first_ticket, link in list(self._linked_orders.items()):
+            partner_ticket = link["partner_ticket"]
+            breakeven_price = link["breakeven_price"]
+
+            # Check if breakeven was already applied (partner SL matches breakeven)
+            already_applied = False
+            for pt in self.trades:
+                if pt.ticket == partner_ticket and abs(pt.sl - breakeven_price) < 0.01:
+                    already_applied = True
+                    break
+            if already_applied:
+                continue
+
+            # Check if the first order actually hit TP
+            first_trade = None
+            for ft in self.trades:
+                if ft.ticket == first_ticket:
+                    first_trade = ft
+                    break
+            if not first_trade or first_trade.status != TradeStatus.TP_HIT.value:
+                continue
+
+            # Try to apply breakeven now
+            self.logger.info(
+                f"Retrying breakeven: partner #{partner_ticket} SL -> {breakeven_price}"
+            )
+            moved = self._modify_position_sl(partner_ticket, breakeven_price)
+            if not moved:
+                moved = self._modify_order_sl(partner_ticket, breakeven_price)
+            if moved:
+                for pt in self.trades:
+                    if pt.ticket == partner_ticket:
+                        pt.sl = breakeven_price
+                        updated = True
+                        break
+                await self._report(
+                    f"🛡️ Breakeven applied (retry):\n"
+                    f"#{partner_ticket} SL moved to {breakeven_price} (entry)\n"
+                    f"Position is now risk-free"
+                )
+                # Remove from linked orders since it's done
+                del self._linked_orders[first_ticket]
+
         for trade in self.trades:
             # --- Step-up SL for @gold_alicxzos110 filled positions ---
             if (
@@ -691,6 +750,9 @@ class TradeManager:
                                 f"#{partner_ticket} SL moved to {breakeven_price} (entry)\n"
                                 f"Position is now risk-free"
                             )
+                            # Remove from linked orders since it's done
+                            if trade.ticket in self._linked_orders:
+                                del self._linked_orders[trade.ticket]
                         else:
                             self.logger.warning(
                                 f"Failed to move SL for partner #{partner_ticket} "
