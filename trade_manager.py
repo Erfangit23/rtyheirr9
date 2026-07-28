@@ -105,6 +105,25 @@ class TradeManager:
             )
             return
 
+        # For @Gulljanali17: skip if any position is already open
+        if signal.source_channel == "@Gulljanali17":
+            open_positions = self.mt5.get_open_positions()
+            pending_orders = self.mt5.get_pending_orders()
+            if open_positions or pending_orders:
+                pos_count = len(open_positions) if open_positions else 0
+                ord_count = len(pending_orders) if pending_orders else 0
+                self.logger.info(
+                    f"@Gulljanali17 signal skipped - {pos_count} open positions, "
+                    f"{ord_count} pending orders already running"
+                )
+                await self._report(
+                    f"⏭️ @Gulljanali17 signal skipped - position already open:\n"
+                    f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                    f"Open positions: {pos_count} | Pending orders: {ord_count}\n"
+                    f"Waiting for current trade to close."
+                )
+                return
+
         # Check daily SL limit
         daily_summary = self.mt5.get_today_trade_summary()
         daily_loss = daily_summary.get("total_loss_usd", 0.0)
@@ -511,7 +530,7 @@ class TradeManager:
             status=TradeStatus.PENDING.value,
             timestamp=now,
             raw_signal=signal.raw_text[:200],
-            tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else (signal.take_profits[0] if signal.take_profits else 0),
+            tp2=0 if signal.source_channel == "@forexkhan" else (signal.take_profits[1] if len(signal.take_profits) >= 2 else (signal.take_profits[0] if signal.take_profits else 0)),
             all_tps=list(signal.take_profits) if signal.source_channel == "@gold_alicxzos110" else [],
         )
         self.trades.append(record)
