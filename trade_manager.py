@@ -121,9 +121,9 @@ class TradeManager:
         if signal.source_channel == "@gold_alicxzos110":
             tp_index = 4
             self.logger.info("Channel @gold_alicxzos110: using TP4 as final TP, step-up SL on TP1/TP2/TP3")
-        elif signal.source_channel == "@khanbours":
+        elif signal.source_channel == "@forexkhan":
             tp_index = 1
-            self.logger.info("Channel @khanbours: using TP1")
+            self.logger.info("Channel @forexkhan: using TP1")
         elif signal.source_channel == "@Signal_Atlas":
             tp_index = 2
             self.logger.info("Channel @Signal_Atlas: using TP2")
