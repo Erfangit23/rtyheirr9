@@ -34,11 +34,24 @@ class Settings:
                 self._data = {}
 
     def save(self):
-        """Save config to file."""
+        """Save config to file, stripping non-serializable fields."""
         with self._lock:
             try:
+                # Deep copy and strip non-serializable fields (like _entity from Telethon)
+                import copy
+                clean_data = copy.deepcopy(self._data)
+
+                # Clean channels: remove _entity and any other non-serializable fields
+                if "channels" in clean_data:
+                    for ch in clean_data["channels"]:
+                        if isinstance(ch, dict):
+                            # Remove keys that start with _ (internal fields like _entity)
+                            keys_to_remove = [k for k in ch if k.startswith("_")]
+                            for k in keys_to_remove:
+                                del ch[k]
+
                 with open(self.config_path, "w", encoding="utf-8") as f:
-                    json.dump(self._data, f, indent=2, ensure_ascii=False)
+                    json.dump(clean_data, f, indent=2, ensure_ascii=False)
                 self.logger.info(f"Config saved to {self.config_path}")
             except Exception as e:
                 self.logger.error(f"Failed to save config: {e}")
