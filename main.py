@@ -103,6 +103,24 @@ async def main():
 
     trade_manager.report_callback = report_callback
 
+    # Set up AI commentary callback (sends to @The_usdt_hunter via bot DM)
+    COMMENTARY_TARGET_USERNAME = "The_usdt_hunter"
+    _commentary_user_id = None
+
+    async def commentary_callback(message: str):
+        nonlocal _commentary_user_id
+        try:
+            if _commentary_user_id is None:
+                # Resolve the username to a user ID via bot client
+                entity = await tg_manager.bot_client.get_entity(COMMENTARY_TARGET_USERNAME)
+                _commentary_user_id = entity.id
+                logger.info(f"Commentary target @{COMMENTARY_TARGET_USERNAME} resolved to ID {_commentary_user_id}")
+            await tg_manager.bot_client.send_message(_commentary_user_id, message)
+        except Exception as e:
+            logger.error(f"Commentary send error: {e}")
+
+    trade_manager.commentary_callback = commentary_callback
+
     # Set up signal handler -> trade manager
     async def signal_callback(signal_obj):
         await trade_manager.process_signal(signal_obj)

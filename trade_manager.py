@@ -57,11 +57,13 @@ class TradeManager:
         settings: Settings,
         mt5: MT5Connector,
         report_callback=None,
+        commentary_callback=None,
         logger: Optional[logging.Logger] = None,
     ):
         self.settings = settings
         self.mt5 = mt5
         self.report_callback = report_callback  # async func(message: str)
+        self.commentary_callback = commentary_callback  # async func(message: str)
         self.logger = logger or logging.getLogger("xau_trader")
         self.trades: list[TradeRecord] = []
         self.trades_file = "data/trades.json"
@@ -508,6 +510,14 @@ class TradeManager:
                 f"SL={signal.stop_loss} ({sl_pips:.0f} pips > {self.settings.max_sl_pips} max)\n"
                 f"Source: {signal.source_channel}"
             )
+            await self._commentary("rejected_sl", {
+                "channel": signal.source_channel,
+                "direction": signal.direction,
+                "symbol": signal.symbol,
+                "entry": signal.entry,
+                "sl": signal.stop_loss,
+                "reason": f"SL {sl_pips:.0f} pips > max {self.settings.max_sl_pips}",
+            })
             return
 
         # Success
@@ -549,6 +559,17 @@ class TradeManager:
                 f"  Price hits TP4 ({signal.take_profits[3]}) -> Position closes"
             )
         await self._report(report_msg)
+
+        # AI commentary
+        await self._commentary("placed", {
+            "channel": signal.source_channel,
+            "direction": signal.direction,
+            "symbol": signal.symbol,
+            "entry": signal.entry,
+            "sl": signal.stop_loss,
+            "tp": signal.take_profits[tp_index-1] if signal.take_profits else 0,
+            "lot_size": self.settings.lot_size,
+        })
 
     async def check_trade_updates(self):
         """Check for trade status updates (filled, TP hit, SL hit)."""
@@ -717,6 +738,15 @@ class TradeManager:
                     f"Entry: {trade.entry} | SL: {trade.sl} | TP: {trade.tp}\n"
                     f"Lot: {trade.lot_size}"
                 )
+                await self._commentary("filled", {
+                    "channel": trade.channel,
+                    "direction": trade.direction,
+                    "symbol": trade.symbol,
+                    "entry": trade.entry,
+                    "sl": trade.sl,
+                    "tp": trade.tp,
+                    "lot_size": trade.lot_size,
+                })
 
             elif trade.ticket not in order_tickets and trade.ticket not in position_tickets:
                 # Order is gone — could be TP hit, SL hit, or cancelled
@@ -738,6 +768,21 @@ class TradeManager:
                         f"Source: {trade.channel}"
                     )
                     updated = True
+
+                    # AI commentary
+                    await self._commentary(
+                        "tp_hit" if deal_info["profit"] > 0 else "sl_hit",
+                        {
+                            "channel": trade.channel,
+                            "direction": trade.direction,
+                            "symbol": trade.symbol,
+                            "entry": trade.entry,
+                            "sl": trade.sl,
+                            "tp": trade.tp,
+                            "lot_size": trade.lot_size,
+                            "profit": deal_info["profit"],
+                        }
+                    )
 
                     # Breakeven: if this trade has a linked partner, move partner SL to entry
                     if trade.status == TradeStatus.TP_HIT.value and trade.ticket in self._linked_orders:
@@ -1022,6 +1067,25 @@ class TradeManager:
                 await self.report_callback(message)
             except Exception as e:
                 self.logger.error(f"Report callback error: {e}")
+
+    async def _commentary(self, event_type: str, trade_data: dict):
+        """Generate and send AI commentary for a trade event."""
+        if not self.commentary_callback:
+            return
+        try:
+            from ai_commentator import AICommentator
+            commentator = AICommentator(logger=self.logger)
+            if not commentator.is_available():
+                return
+            import asyncio
+            text = await asyncio.get_event_loop().run_in_executor(
+                None, commentator.generate_commentary, event_type, trade_data
+            )
+            if text:
+                await self.commentary_callback(text)
+                self.logger.info(f"AI commentary sent for {event_type}")
+        except Exception as e:
+            self.logger.error(f"AI commentary error: {e}")
 
     def _modify_position_sl(self, ticket: int, new_sl: float) -> bool:
         """Modify an open position's stop loss by ticket."""
