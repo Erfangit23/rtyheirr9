@@ -213,7 +213,7 @@ class MT5Connector:
             "tp": tp_price_norm,
             "deviation": 20,
             "magic": 779900,
-            "comment": f"{signal.source_channel.lstrip('@')}|XAU"
+            "comment": f"{signal.source_channel.lstrip('@')}|XAU",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": filling_type,
         }
