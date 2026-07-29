@@ -897,8 +897,29 @@ class TradeManager:
             self._save_trades()
 
     def get_channel_stats(self) -> dict:
-        """Compute per-channel statistics from trade history."""
+        """Compute per-channel statistics from trade history + MT5 deal history."""
         stats = {}
+
+        # Try to fetch deal history from MT5 for real PnL
+        deal_profits = {}  # ticket -> total profit
+        try:
+            if self.mt5.ensure_connected():
+                import MetaTrader5 as mt5
+                from datetime import datetime, timezone, timedelta
+                utc_to = datetime.now(timezone.utc)
+                utc_from = utc_to - timedelta(days=30)  # Last 30 days
+                deals = mt5.history_deals_get(utc_from, utc_to)
+                if deals:
+                    for deal in deals:
+                        if deal.magic != 779900:
+                            continue
+                        key = deal.position_id or deal.order
+                        if key not in deal_profits:
+                            deal_profits[key] = 0.0
+                        deal_profits[key] += deal.profit
+        except Exception as e:
+            self.logger.error(f"Deal history fetch for stats error: {e}")
+
         for trade in self.trades:
             ch = trade.channel
             if ch not in stats:
@@ -910,18 +931,34 @@ class TradeManager:
                     "cancelled": 0,
                     "rejected": 0,
                     "pending": 0,
-                    "profit": 0.0,
+                    "total_profit": 0.0,
+                    "tp_profits": 0.0,
+                    "sl_losses": 0.0,
+                    "last_entry": 0.0,
+                    "last_tp": 0.0,
+                    "last_sl": 0.0,
                 }
             s = stats[ch]
             s["total"] += 1
+            s["last_entry"] = trade.entry
+            s["last_tp"] = trade.tp
+            s["last_sl"] = trade.sl
+
             if trade.status == TradeStatus.PENDING.value:
                 s["pending"] += 1
             elif trade.status == TradeStatus.FILLED.value:
                 s["filled"] += 1
             elif trade.status == TradeStatus.TP_HIT.value:
                 s["tp_hit"] += 1
+                # Get actual profit from deal history
+                profit = deal_profits.get(trade.ticket, 0.0)
+                s["tp_profits"] += profit
+                s["total_profit"] += profit
             elif trade.status == TradeStatus.SL_HIT.value:
                 s["sl_hit"] += 1
+                profit = deal_profits.get(trade.ticket, 0.0)
+                s["sl_losses"] += profit  # negative number
+                s["total_profit"] += profit
             elif trade.status == TradeStatus.CANCELLED.value:
                 s["cancelled"] += 1
             elif trade.status == TradeStatus.REJECTED_SL.value:

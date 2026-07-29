@@ -350,16 +350,25 @@ class CommandHandler:
                 rejected = s.get("rejected", 0)
                 pending = s.get("pending", 0)
                 filled = s.get("filled", 0)
+                total_profit = s.get("total_profit", 0.0)
+                tp_profits = s.get("tp_profits", 0.0)
+                sl_losses = s.get("sl_losses", 0.0)
+                last_entry = s.get("last_entry", 0)
+                last_tp = s.get("last_tp", 0)
+                last_sl = s.get("last_sl", 0)
 
                 # Winrate: closed trades only (tp + sl)
                 closed = tp_hits + sl_hits
                 winrate = (tp_hits / closed * 100) if closed > 0 else 0
 
+                profit_str = f"+{total_profit:.2f}" if total_profit >= 0 else f"{total_profit:.2f}"
+
                 lines.append(
                     f"   Trades: {total} | Pending: {pending} | Filled: {filled}\n"
-                    f"   TP hits: {tp_hits} | SL hits: {sl_hits}\n"
-                    f"   Cancelled: {cancelled} | Rejected: {rejected}\n"
+                    f"   TP: {tp_hits} | SL: {sl_hits} | Cancelled: {cancelled} | Rejected: {rejected}\n"
                     f"   Winrate: {winrate:.1f}% ({closed} closed)\n"
+                    f"   PnL: {profit_str} USD\n"
+                    f"   Last: Entry={last_entry} TP={last_tp} SL={last_sl}\n"
                 )
             else:
                 lines.append("   No trades yet.\n")
