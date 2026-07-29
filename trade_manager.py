@@ -760,13 +760,9 @@ class TradeManager:
 
                         should_cancel = False
                         if trade.direction == "SELL":
-                            # For SELL: TP2 is below entry. If price drops to TP2
-                            # without entry being hit, the move happened without us.
                             if current_bid <= tp2:
                                 should_cancel = True
                         elif trade.direction == "BUY":
-                            # For BUY: TP2 is above entry. If price rises to TP2
-                            # without entry being hit, the move happened without us.
                             if current_ask >= tp2:
                                 should_cancel = True
 
@@ -784,6 +780,42 @@ class TradeManager:
                                     f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
                                     f"Entry: {trade.entry} (never filled)\n"
                                     f"TP2: {tp2} was reached\n"
+                                    f"Source: {trade.channel}"
+                                )
+                            else:
+                                self.logger.error(
+                                    f"Failed to cancel order #{trade.ticket}"
+                                )
+
+                # For @forexkhan: cancel pending order if price reaches TP1 without filling
+                if trade.channel == "@forexkhan" and trade.tp > 0:
+                    prices = self.mt5.get_symbol_price(trade.symbol)
+                    if prices:
+                        current_bid, current_ask = prices
+                        tp1 = trade.tp
+
+                        should_cancel = False
+                        if trade.direction == "SELL":
+                            if current_ask <= tp1:
+                                should_cancel = True
+                        elif trade.direction == "BUY":
+                            if current_bid >= tp1:
+                                should_cancel = True
+
+                        if should_cancel:
+                            self.logger.info(
+                                f"Price reached TP1 ({tp1}) for pending {trade.direction} "
+                                f"order #{trade.ticket}. Cancelling order."
+                            )
+                            cancelled = self.mt5.cancel_order(trade.ticket)
+                            if cancelled:
+                                trade.status = TradeStatus.CANCELLED.value
+                                updated = True
+                                await self._report(
+                                    f"🗑️ Order CANCELLED - price hit TP1 without filling:\n"
+                                    f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                                    f"Entry: {trade.entry} (never filled)\n"
+                                    f"TP1: {tp1} was reached\n"
                                     f"Source: {trade.channel}"
                                 )
                             else:
