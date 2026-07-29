@@ -96,7 +96,9 @@ class CommandHandler:
                 "/channels - Channel stats & status\n"
                 "/trades - Open positions & pending orders\n"
                 "/report - Today's trade summary\n"
-                "/backtest - Backtest a channel's signals\n\n"
+                "/backtest - Backtest a channel's signals\n"
+                "/makeaion - Enable AI signal parsing\n"
+                "/makeaioff - Disable AI signal parsing\n\n"
                 "🔐 To change settings, send:\n"
                 "/change - Start settings change flow\n\n"
                 "⚠️ Default password: Amin123"
@@ -123,6 +125,14 @@ class CommandHandler:
         if text.lower() == "/change":
             self._awaiting_password[user_id] = True
             return "🔐 Enter password to change settings:"
+
+        if text.lower() == "/makeaion":
+            self.settings.set_ai_mode(True)
+            return "🤖 AI mode is now ON. Signals will be parsed by DeepSeek V4 Flash."
+
+        if text.lower() == "/makeaioff":
+            self.settings.set_ai_mode(False)
+            return "⚙️ AI mode is now OFF. Signals will be parsed by regex parsers."
 
         # --- Password handling ---
         if user_id in self._awaiting_password:
@@ -266,8 +276,10 @@ class CommandHandler:
             f"Default TP: TP{p['default_tp_index']}\n"
             f"Max SL (per trade): {p['max_sl_pips']} pips\n"
             f"Max SL (per day): {p['max_daily_sl_pips']} pips\n"
-            f"Bot Active: {'Yes' if p['bot_active'] else 'No'}\n\n"
-            f"Send /change to modify (password required)"
+            f"Bot Active: {'Yes' if p['bot_active'] else 'No'}\n"
+            f"AI Mode: {'ON (DeepSeek V4 Flash)' if p['ai_mode'] else 'OFF (regex parsers)'}\n\n"
+            f"Send /change to modify (password required)\n"
+            f"Send /makeaion or /makeaioff to toggle AI mode"
         )
 
     def _cmd_trades(self) -> str:

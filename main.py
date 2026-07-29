@@ -109,6 +109,46 @@ async def main():
 
     tg_manager.register_signal_handler(signal_callback)
 
+    # Set up cancel handler (AI mode only — cancels last pending order from channel)
+    async def cancel_callback(channel: str):
+        logger.info(f"Cancel signal from {channel}")
+        # Find the most recent pending order from this channel
+        for trade in reversed(trade_manager.trades):
+            if trade.channel == channel and trade.status == "pending":
+                if trade.ticket > 0:
+                    cancelled = mt5_conn.cancel_order(trade.ticket)
+                    if cancelled:
+                        trade.status = "cancelled"
+                        trade_manager._save_trades()
+                        await tg_manager.send_report(
+                            f"🗑️ Order CANCELLED (channel cancel signal):\n"
+                            f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                            f"Source: {channel}"
+                        )
+                break
+
+    tg_manager.register_cancel_handler(cancel_callback)
+
+    # Set up modify handler (AI mode only — modifies SL/TP on open position)
+    async def modify_callback(channel: str, new_sl, new_tp):
+        logger.info(f"Modify signal from {channel}: SL={new_sl}, TP={new_tp}")
+        for trade in reversed(trade_manager.trades):
+            if trade.channel == channel and trade.status == "filled":
+                if new_sl is not None:
+                    moved = trade_manager._modify_position_sl(trade.ticket, float(new_sl))
+                    if moved:
+                        trade.sl = float(new_sl)
+                        trade_manager._save_trades()
+                        await tg_manager.send_report(
+                            f"🔧 SL modified (channel signal):\n"
+                            f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                            f"New SL: {new_sl}\n"
+                            f"Source: {channel}"
+                        )
+                break
+
+    tg_manager.register_modify_handler(modify_callback)
+
     # Set up command handler
     # tg_manager.user_client will be set after connect_user_client(),
     # but we pass a lambda that retrieves it lazily

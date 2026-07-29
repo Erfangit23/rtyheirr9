@@ -12,6 +12,7 @@ from telethon import TelegramClient, events
 from telethon.tl.custom import Message
 
 from signal_parser import parse_signal, Signal
+from ai_parser import AIParser
 
 
 class TelegramManager:
@@ -47,6 +48,8 @@ class TelegramManager:
         # Callbacks
         self.on_signal_callback: Optional[Callable[[Signal], Awaitable[None]]] = None
         self.on_command_callback: Optional[Callable[[str, int], Awaitable[str]]] = None
+        self.on_cancel_callback: Optional[Callable[[str], Awaitable[None]]] = None
+        self.on_modify_callback: Optional[Callable[[str, Optional[float], Optional[float]], Awaitable[None]]] = None
 
         # Track processed message IDs to avoid duplicates
         self.processed_ids: set[int] = set()
@@ -138,6 +141,14 @@ class TelegramManager:
         """Register the callback for bot commands."""
         self.on_command_callback = callback
 
+    def register_cancel_handler(self, callback: Callable[[str], Awaitable[None]]):
+        """Register the callback for cancel messages (AI mode only)."""
+        self.on_cancel_callback = callback
+
+    def register_modify_handler(self, callback: Callable[[str, Optional[float], Optional[float]], Awaitable[None]]):
+        """Register the callback for modify messages (AI mode only)."""
+        self.on_modify_callback = callback
+
     async def start_monitoring(self):
         """Start listening for new messages in monitored channels."""
         if not self.user_client:
@@ -179,14 +190,50 @@ class TelegramManager:
 
             # Parse the signal
             fmt = matched_channel.get("format", "auto")
-            signal = parse_signal(text, matched_channel["id"], fmt)
+            signal = None
 
-            # If specified format failed, try auto as fallback
-            if not signal and fmt != "auto":
-                self.logger.info(
-                    f"Format '{fmt}' failed for message, trying auto..."
-                )
-                signal = parse_signal(text, matched_channel["id"], "auto")
+            # Check if AI mode is enabled
+            use_ai = self.settings and self.settings.ai_mode
+
+            if use_ai:
+                # Try AI parser first
+                if not hasattr(self, '_ai_parser'):
+                    self._ai_parser = AIParser(logger=self.logger)
+
+                if self._ai_parser.is_available():
+                    # Check for cancel/modify actions first
+                    action = self._ai_parser.parse_action(text, matched_channel["id"])
+                    if action:
+                        action_type = action.get("action", "ignore")
+                        if action_type == "cancel":
+                            self.logger.info(f"AI detected CANCEL action: {action.get('reason', '')}")
+                            if self.on_cancel_callback:
+                                await self.on_cancel_callback(matched_channel["id"])
+                            return
+                        elif action_type == "modify":
+                            self.logger.info(f"AI detected MODIFY action: {action}")
+                            if self.on_modify_callback:
+                                await self.on_modify_callback(
+                                    matched_channel["id"],
+                                    action.get("new_sl"),
+                                    action.get("new_tp"),
+                                )
+                            return
+                        elif action_type == "ignore":
+                            self.logger.debug(f"AI says ignore: {action.get('reason', '')}")
+                            return
+
+                    # Parse as trade signal
+                    signal = self._ai_parser.parse_signal(text, matched_channel["id"])
+                else:
+                    self.logger.warning("AI mode on but parser unavailable, using regex")
+                    signal = parse_signal(text, matched_channel["id"], fmt)
+
+            if not signal:
+                # Regex fallback (also used when AI is off)
+                signal = parse_signal(text, matched_channel["id"], fmt)
+                if not signal and fmt != "auto":
+                    signal = parse_signal(text, matched_channel["id"], "auto")
 
             if signal:
                 self.logger.info(f"Parsed signal: {signal}")
@@ -195,7 +242,7 @@ class TelegramManager:
                         await self.on_signal_callback(signal)
                     except Exception as e:
                         self.logger.error(f"Signal callback error: {e}")
-            else:
+            elif not use_ai:
                 self.logger.warning(
                     f"Message did not match any signal format: {text[:200]}"
                 )

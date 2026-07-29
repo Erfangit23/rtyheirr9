@@ -115,6 +115,15 @@ class Settings:
     def settings_password(self) -> str:
         return self.trading.get("settings_password", "Amin123")
 
+    @property
+    def ai_mode(self) -> bool:
+        return self.trading.get("ai_mode", False)
+
+    def set_ai_mode(self, value: bool):
+        with self._lock:
+            self._data.setdefault("trading", {})["ai_mode"] = value
+        self.save()
+
     # --- Setters ---
     def set_lot_size(self, value: float):
         with self._lock:
@@ -150,4 +159,5 @@ class Settings:
             "max_sl_pips": t.get("max_sl_pips", 150),
             "max_daily_sl_pips": t.get("max_daily_sl_pips", 500),
             "bot_active": t.get("bot_active", True),
+            "ai_mode": t.get("ai_mode", False),
         }
