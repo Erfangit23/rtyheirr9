@@ -582,13 +582,23 @@ class TradeManager:
             if already_applied:
                 continue
 
-            # Check if the first order actually hit TP
+            # Check if the first order actually hit TP and partner still exists
             first_trade = None
             for ft in self.trades:
                 if ft.ticket == first_ticket:
                     first_trade = ft
                     break
             if not first_trade or first_trade.status != TradeStatus.TP_HIT.value:
+                continue
+
+            # Check if partner position/order still exists
+            partner_exists = partner_ticket in position_tickets or partner_ticket in order_tickets
+            if not partner_exists:
+                # Partner is gone — clean up
+                self.logger.info(
+                    f"Partner #{partner_ticket} no longer exists, removing breakeven link"
+                )
+                del self._linked_orders[first_ticket]
                 continue
 
             # Try to apply breakeven now
@@ -621,6 +631,30 @@ class TradeManager:
                 and len(trade.all_tps) >= 4
                 and trade.sl_step < 3
             ):
+                # Check if position still exists — if not, mark as closed
+                if trade.ticket not in position_tickets:
+                    # Position is gone — check if it was TP or SL
+                    deal_info = self._check_deal_history(trade.ticket)
+                    if deal_info:
+                        if deal_info["profit"] > 0:
+                            trade.status = TradeStatus.TP_HIT.value
+                        else:
+                            trade.status = TradeStatus.SL_HIT.value
+                        updated = True
+                        self.logger.info(
+                            f"Position #{trade.ticket} closed (profit={deal_info['profit']:.2f}), "
+                            f"marked as {trade.status}"
+                        )
+                    else:
+                        # No deal history found — just mark as closed to stop retrying
+                        trade.status = TradeStatus.CANCELLED.value
+                        updated = True
+                        self.logger.warning(
+                            f"Position #{trade.ticket} not found and no deal history, "
+                            f"marking as cancelled to stop SL retry"
+                        )
+                    continue
+
                 prices = self.mt5.get_symbol_price(trade.symbol)
                 if prices:
                     current_bid, current_ask = prices
