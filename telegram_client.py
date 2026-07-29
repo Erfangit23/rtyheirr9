@@ -192,8 +192,9 @@ class TelegramManager:
             fmt = matched_channel.get("format", "auto")
             signal = None
 
-            # Check if AI mode is enabled
-            use_ai = self.settings and self.settings.ai_mode
+            # Check if AI mode is enabled (skip AI for channels that use classic parser)
+            ai_excluded_channels = ["@Gulljanali17"]
+            use_ai = self.settings and self.settings.ai_mode and matched_channel["id"] not in ai_excluded_channels
 
             if use_ai:
                 # Try AI parser first
