@@ -149,6 +149,9 @@ class TradeManager:
         if signal.source_channel == "@gold_alicxzos110":
             tp_index = 4
             self.logger.info("Channel @gold_alicxzos110: using TP4 as final TP, step-up SL on TP1/TP2/TP3")
+        elif signal.source_channel == "@GoldVisionofficial":
+            tp_index = 3
+            self.logger.info("Channel @GoldVisionofficial: using TP3 as final TP, SL to entry on TP1/TP2")
         elif signal.source_channel == "@forexkhan":
             tp_index = 1
             self.logger.info("Channel @forexkhan: using TP1")
@@ -562,7 +565,7 @@ class TradeManager:
             timestamp=now,
             raw_signal=signal.raw_text[:200],
             tp2=0 if signal.source_channel == "@forexkhan" else (signal.take_profits[1] if len(signal.take_profits) >= 2 else (signal.take_profits[0] if signal.take_profits else 0)),
-            all_tps=list(signal.take_profits) if signal.source_channel == "@gold_alicxzos110" else [],
+            all_tps=list(signal.take_profits) if signal.source_channel in ("@gold_alicxzos110", "@GoldVisionofficial") else [],
         )
         self.trades.append(record)
         self._save_trades()
@@ -577,14 +580,22 @@ class TradeManager:
             f"Lot: {self.settings.lot_size}\n"
             f"Source: {signal.source_channel}"
         )
-        if signal.source_channel == "@gold_alicxzos110" and len(signal.take_profits) >= 4:
-            report_msg += (
-                f"\n\n📊 Step-up SL plan:\n"
-                f"  Price hits TP1 ({signal.take_profits[0]}) -> SL to entry ({signal.entry})\n"
-                f"  Price hits TP2 ({signal.take_profits[1]}) -> SL to TP1 ({signal.take_profits[0]})\n"
-                f"  Price hits TP3 ({signal.take_profits[2]}) -> SL to TP2 ({signal.take_profits[1]})\n"
-                f"  Price hits TP4 ({signal.take_profits[3]}) -> Position closes"
-            )
+        if signal.source_channel in ("@gold_alicxzos110", "@GoldVisionofficial") and len(signal.take_profits) >= 3:
+            if signal.source_channel == "@gold_alicxzos110" and len(signal.take_profits) >= 4:
+                report_msg += (
+                    f"\n\n📊 Step-up SL plan:\n"
+                    f"  Price hits TP1 ({signal.take_profits[0]}) -> SL to entry ({signal.entry})\n"
+                    f"  Price hits TP2 ({signal.take_profits[1]}) -> SL to TP1 ({signal.take_profits[0]})\n"
+                    f"  Price hits TP3 ({signal.take_profits[2]}) -> SL to TP2 ({signal.take_profits[1]})\n"
+                    f"  Price hits TP4 ({signal.take_profits[3]}) -> Position closes"
+                )
+            elif signal.source_channel == "@GoldVisionofficial":
+                report_msg += (
+                    f"\n\n📊 Step-up SL plan:\n"
+                    f"  Price hits TP1 ({signal.take_profits[0]}) -> SL to entry ({signal.entry})\n"
+                    f"  Price hits TP2 ({signal.take_profits[1]}) -> SL to entry ({signal.entry})\n"
+                    f"  Price hits TP3 ({signal.take_profits[2]}) -> Position closes"
+                )
         await self._report(report_msg)
 
         # AI commentary
@@ -749,6 +760,73 @@ class TradeManager:
                                 f"SL moved to {new_sl} ({step_labels[next_step]})\n"
                                 f"Source: {trade.channel}"
                             )
+                        else:
+                            self.logger.warning(
+                                f"Failed to move SL for #{trade.ticket} step {next_step}"
+                            )
+
+            # --- Step-up SL for @GoldVisionofficial filled positions ---
+            # TP1 reached -> SL to entry (risk-free)
+            # TP2 reached -> SL to entry (still risk-free)
+            # TP3 is the final TP (position closes automatically)
+            if (
+                trade.status == TradeStatus.FILLED.value
+                and trade.channel == "@GoldVisionofficial"
+                and trade.all_tps
+                and len(trade.all_tps) >= 3
+                and trade.sl_step < 2
+            ):
+                # Check if position still exists
+                if trade.ticket not in position_tickets:
+                    deal_info = self._check_deal_history(trade.ticket)
+                    if deal_info:
+                        trade.status = TradeStatus.TP_HIT.value if deal_info["profit"] > 0 else TradeStatus.SL_HIT.value
+                    else:
+                        trade.status = TradeStatus.CANCELLED.value
+                    updated = True
+                    continue
+
+                prices = self.mt5.get_symbol_price(trade.symbol)
+                if prices:
+                    current_bid, current_ask = prices
+                    next_step = trade.sl_step + 1
+                    target_tp = trade.all_tps[trade.sl_step]  # TP1 (step 0->1), TP2 (step 1->2)
+                    new_sl = None
+
+                    if trade.direction == "BUY":
+                        if current_bid >= target_tp:
+                            new_sl = trade.entry  # SL to entry for both TP1 and TP2
+                    elif trade.direction == "SELL":
+                        if current_ask <= target_tp:
+                            new_sl = trade.entry  # SL to entry for both TP1 and TP2
+
+                    if new_sl is not None:
+                        self.logger.info(
+                            f"GoldVision step-up SL: #{trade.ticket} reached TP{next_step} "
+                            f"({target_tp}), moving SL to entry {new_sl}"
+                        )
+                        moved = self._modify_position_sl(trade.ticket, new_sl)
+                        if moved:
+                            trade.sl_step = next_step
+                            trade.sl = new_sl
+                            updated = True
+                            await self._report(
+                                f"🛡️ SL moved to entry (risk-free):\n"
+                                f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                                f"Price reached TP{next_step} ({target_tp})\n"
+                                f"SL moved to {new_sl} (entry)\n"
+                                f"Source: {trade.channel}"
+                            )
+                            await self._commentary("filled", {
+                                "channel": trade.channel,
+                                "direction": trade.direction,
+                                "symbol": trade.symbol,
+                                "entry": trade.entry,
+                                "sl": new_sl,
+                                "tp": trade.tp,
+                                "lot_size": trade.lot_size,
+                                "reason": f"TP{next_step} reached, SL moved to entry",
+                            })
                         else:
                             self.logger.warning(
                                 f"Failed to move SL for #{trade.ticket} step {next_step}"

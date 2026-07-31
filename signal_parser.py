@@ -387,6 +387,76 @@ def parse_format6(text: str, channel: str) -> Optional[Signal]:
     )
 
 
+def parse_format7(text: str, channel: str) -> Optional[Signal]:
+    """Parse Format 7: GoldVisionofficial style with emoji markers.
+
+    Example:
+    XAUUSD | SELL 📈
+
+    Entry : 4043
+
+    ✔️TP1: 4039
+    ✔️TP2: 4035
+    ✔️TP3: 4031
+    🚀TP4: 4027
+
+    ❌SL : 4052
+    """
+    full_text = text.strip()
+
+    # Direction: XAUUSD | SELL or XAUUSD | BUY (with emoji after)
+    dir_match = re.search(
+        r"XAUUSD\s*[\|\-]\s*(BUY|SELL)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not dir_match:
+        return None
+
+    direction = dir_match.group(1).upper()
+
+    # Entry: Entry : 4043
+    entry_match = re.search(
+        r"ENTRY\s*:?\s*([\d.]+)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not entry_match:
+        return None
+    entry = float(entry_match.group(1))
+
+    # Stop loss: ❌SL : 4052, SL : 4052
+    sl_match = re.search(
+        r"(?:SL|STOP\s*LOSS)\s*:?\s*([\d.]+)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not sl_match:
+        return None
+    stop_loss = float(sl_match.group(1))
+
+    # Take profits: ✔️TP1: 4039, 🚀TP4: 4027, TP1: 4039
+    tp_matches = re.findall(
+        r"TP\s*\d+\s*:?\s*(\d[\d.]*)",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not tp_matches:
+        return None
+
+    take_profits = [float(tp) for tp in tp_matches]
+
+    return Signal(
+        symbol="XAUUSD",
+        direction=direction,
+        entry=entry,
+        stop_loss=stop_loss,
+        take_profits=take_profits,
+        raw_text=text,
+        source_channel=channel,
+    )
+
+
 PARSERS = {
     "format1": parse_format1,
     "format2": parse_format2,
@@ -394,6 +464,7 @@ PARSERS = {
     "format4": parse_format4,
     "format5": parse_format5,
     "format6": parse_format6,
+    "format7": parse_format7,
 }
 
 
