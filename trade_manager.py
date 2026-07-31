@@ -68,7 +68,9 @@ class TradeManager:
         self.trades: list[TradeRecord] = []
         self.trades_file = "data/trades.json"
         self._linked_orders = {}  # ticket -> {partner_ticket, breakeven_price}
+        self._linked_orders_file = "data/linked_orders.json"
         self._load_trades()
+        self._load_linked_orders()
 
     def _load_trades(self):
         """Load trade history from file."""
@@ -91,6 +93,30 @@ class TradeManager:
                 json.dump([asdict(t) for t in self.trades], f, indent=2, ensure_ascii=False)
         except Exception as e:
             self.logger.error(f"Failed to save trades: {e}")
+
+    def _load_linked_orders(self):
+        """Load linked orders from file."""
+        try:
+            if os.path.exists(self._linked_orders_file):
+                with open(self._linked_orders_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # Convert string keys back to int
+                    self._linked_orders = {int(k): v for k, v in data.items()}
+                self.logger.info(f"Loaded {len(self._linked_orders)} linked order pairs.")
+        except Exception as e:
+            self.logger.error(f"Failed to load linked orders: {e}")
+            self._linked_orders = {}
+
+    def _save_linked_orders(self):
+        """Save linked orders to file."""
+        try:
+            os.makedirs("data", exist_ok=True)
+            with open(self._linked_orders_file, "w", encoding="utf-8") as f:
+                # Convert int keys to string for JSON
+                data = {str(k): v for k, v in self._linked_orders.items()}
+                json.dump(data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.logger.error(f"Failed to save linked orders: {e}")
 
     async def process_signal(self, signal: Signal):
         """Process a parsed signal: apply risk checks and place order."""
@@ -346,6 +372,7 @@ class TradeManager:
                     "partner_ticket": second_ticket,
                     "breakeven_price": second_entry,  # move SL to second order's entry
                 }
+                self._save_linked_orders()
                 self.logger.info(
                     f"Linked orders: #{first_ticket} (TP1) -> #{second_ticket} breakeven @ {second_entry}"
                 )
@@ -620,6 +647,7 @@ class TradeManager:
                     f"Partner #{partner_ticket} no longer exists, removing breakeven link"
                 )
                 del self._linked_orders[first_ticket]
+                self._save_linked_orders()
                 continue
 
             # Try to apply breakeven now
@@ -642,6 +670,7 @@ class TradeManager:
                 )
                 # Remove from linked orders since it's done
                 del self._linked_orders[first_ticket]
+                self._save_linked_orders()
 
         for trade in self.trades:
             # --- Step-up SL for @gold_alicxzos110 filled positions ---
@@ -813,6 +842,7 @@ class TradeManager:
                             # Remove from linked orders since it's done
                             if trade.ticket in self._linked_orders:
                                 del self._linked_orders[trade.ticket]
+                                self._save_linked_orders()
                         else:
                             self.logger.warning(
                                 f"Failed to move SL for partner #{partner_ticket} "

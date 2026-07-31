@@ -192,40 +192,66 @@ class TelegramManager:
             fmt = matched_channel.get("format", "auto")
             signal = None
 
-            # Check if AI mode is enabled (skip AI for channels that use classic parser)
-            ai_excluded_channels = ["@Gulljanali17"]
-            use_ai = self.settings and self.settings.ai_mode and matched_channel["id"] not in ai_excluded_channels
+            # Check if AI mode is enabled
+            # Some channels use regex for signal parsing but AI for cancel/modify detection
+            regex_only_channels = ["@Gulljanali17", "@BrianTradingForex"]
+            use_ai = self.settings and self.settings.ai_mode
+            use_ai_for_parsing = use_ai and matched_channel["id"] not in regex_only_channels
 
             if use_ai:
-                # Try AI parser first
+                # Try AI parser first (for cancel/modify detection on all channels)
                 if not hasattr(self, '_ai_parser'):
                     self._ai_parser = AIParser(logger=self.logger)
 
                 if self._ai_parser.is_available():
-                    # Check for cancel/modify actions first
-                    action = self._ai_parser.parse_action(text, matched_channel["id"])
-                    if action:
-                        action_type = action.get("action", "ignore")
-                        if action_type == "cancel":
-                            self.logger.info(f"AI detected CANCEL action: {action.get('reason', '')}")
-                            if self.on_cancel_callback:
-                                await self.on_cancel_callback(matched_channel["id"])
-                            return
-                        elif action_type == "modify":
-                            self.logger.info(f"AI detected MODIFY action: {action}")
-                            if self.on_modify_callback:
-                                await self.on_modify_callback(
-                                    matched_channel["id"],
-                                    action.get("new_sl"),
-                                    action.get("new_tp"),
-                                )
-                            return
-                        elif action_type == "ignore":
-                            self.logger.debug(f"AI says ignore: {action.get('reason', '')}")
-                            return
+                    # For regex-only channels, still check for cancel/modify via AI
+                    # but don't use AI for signal parsing
+                    if not use_ai_for_parsing:
+                        action = self._ai_parser.parse_action(text, matched_channel["id"])
+                        if action:
+                            action_type = action.get("action", "ignore")
+                            if action_type == "cancel":
+                                self.logger.info(f"AI detected CANCEL action: {action.get('reason', '')}")
+                                if self.on_cancel_callback:
+                                    await self.on_cancel_callback(matched_channel["id"])
+                                return
+                            elif action_type == "modify":
+                                self.logger.info(f"AI detected MODIFY action: {action}")
+                                if self.on_modify_callback:
+                                    await self.on_modify_callback(
+                                        matched_channel["id"],
+                                        action.get("new_sl"),
+                                        action.get("new_tp"),
+                                    )
+                                return
+                            elif action_type == "ignore":
+                                # Not a cancel/modify — fall through to regex parsing
+                                pass
+                        # Fall through to regex parsing below
+                    else:
+                        # Full AI parsing for this channel
+                        action = self._ai_parser.parse_action(text, matched_channel["id"])
+                        if action:
+                            action_type = action.get("action", "ignore")
+                            if action_type == "cancel":
+                                self.logger.info(f"AI detected CANCEL action: {action.get('reason', '')}")
+                                if self.on_cancel_callback:
+                                    await self.on_cancel_callback(matched_channel["id"])
+                                return
+                            elif action_type == "modify":
+                                self.logger.info(f"AI detected MODIFY action: {action}")
+                                if self.on_modify_callback:
+                                    await self.on_modify_callback(
+                                        matched_channel["id"],
+                                        action.get("new_sl"),
+                                        action.get("new_tp"),
+                                    )
+                                return
+                            elif action_type == "ignore":
+                                self.logger.debug(f"AI says ignore: {action.get('reason', '')}")
+                                return
 
-                    # Parse as trade signal
-                    signal = self._ai_parser.parse_signal(text, matched_channel["id"])
+                        signal = self._ai_parser.parse_signal(text, matched_channel["id"])
                 else:
                     self.logger.warning("AI mode on but parser unavailable, using regex")
                     signal = parse_signal(text, matched_channel["id"], fmt)
@@ -243,7 +269,7 @@ class TelegramManager:
                         await self.on_signal_callback(signal)
                     except Exception as e:
                         self.logger.error(f"Signal callback error: {e}")
-            elif not use_ai:
+            elif not use_ai_for_parsing:
                 self.logger.warning(
                     f"Message did not match any signal format: {text[:200]}"
                 )
