@@ -194,7 +194,7 @@ class TelegramManager:
 
             # Check if AI mode is enabled
             # Some channels use regex for signal parsing but AI for cancel/modify detection
-            regex_only_channels = ["@Gulljanali17", "@BrianTradingForex"]
+            regex_only_channels = ["@Gulljanali17", "@BrianTradingForex", "@forexkhan"]
             use_ai = self.settings and self.settings.ai_mode
             use_ai_for_parsing = use_ai and matched_channel["id"] not in regex_only_channels
 
@@ -249,7 +249,9 @@ class TelegramManager:
                                 return
                             elif action_type == "ignore":
                                 self.logger.debug(f"AI says ignore: {action.get('reason', '')}")
-                                return
+                                # Don't return — fall through to regex parsing
+                                # (AI might have misidentified a signal as non-signal)
+                                pass
 
                         signal = self._ai_parser.parse_signal(text, matched_channel["id"])
                 else:
