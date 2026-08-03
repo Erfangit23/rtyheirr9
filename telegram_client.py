@@ -183,7 +183,23 @@ class TelegramManager:
                 return
             self.processed_ids.add(msg_id)
 
-            text = event.raw_text
+            # Get text — handle forwarded messages properly
+            text = event.raw_text or ""
+            # For forwarded messages, also check fwd_from_text
+            if not text and hasattr(event.message, 'fwd_from') and event.message.fwd_from:
+                text = getattr(event.message.fwd_from, 'message', '') or ""
+            # Also try getting text from the message object directly
+            if not text and event.message.text:
+                text = event.message.text
+            if not text and event.message.message:
+                text = event.message.message
+
+            if not text or len(text.strip()) < 10:
+                self.logger.debug(
+                    f"Message {msg_id} from {matched_channel['id']} has no usable text, skipping"
+                )
+                return
+
             self.logger.info(
                 f"New message from {matched_channel['id']}: {text[:80]}..."
             )
