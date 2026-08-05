@@ -413,7 +413,8 @@ class TradeManager:
             # Invalid price — market already moved past entry
             self.logger.warning(f"Order rejected - invalid price (market moved past entry)")
 
-            # For @Gulljanali17: if market is within 10 pips of entry, place market order
+            # For @Gulljanali17: if market is within 4 pips of entry, place market order
+            # Also adjust limit entry 4 pips closer to market for faster fills
             if signal.source_channel == "@Gulljanali17":
                 prices = self.mt5.get_symbol_price(signal.symbol)
                 if prices:
@@ -427,9 +428,9 @@ class TradeManager:
                         f"@Gulljanali17: Market-entry diff = {diff_pips:.1f} pips"
                     )
 
-                    if diff_pips <= 10:
+                    if diff_pips <= 4:
                         self.logger.info(
-                            f"@Gulljanali17: Within 10 pips, placing MARKET order"
+                            f"@Gulljanali17: Within 4 pips, placing MARKET order"
                         )
                         mkt_ticket = self.mt5.place_market_order(
                             signal=signal,
@@ -458,7 +459,7 @@ class TradeManager:
                             self.trades.append(record)
                             self._save_trades()
                             await self._report(
-                                f"✅ MARKET order placed (within 10 pips):\n"
+                                f"✅ MARKET order placed (within 4 pips):\n"
                                 f"#{mkt_ticket} {signal.direction} {signal.symbol}\n"
                                 f"Signal Entry: {signal.entry}\n"
                                 f"Market Entry: ~{current_ask if signal.direction.upper() == 'BUY' else current_bid}\n"
@@ -477,22 +478,48 @@ class TradeManager:
                             )
                             return
                         else:
+                            err_code = mkt_ticket if mkt_ticket is not None else "None"
                             self.logger.error(
                                 f"Market order failed for @Gulljanali17: ticket={mkt_ticket}"
                             )
                             await self._report(
-                                f"❌ Market order FAILED:\n"
+                                f"❌ Market order FAILED (code: {err_code}):\n"
                                 f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
-                                f"Source: {signal.source_channel}"
+                                f"SL: {signal.stop_loss}\n"
+                                f"TP: {signal.take_profits[tp_index-1] if signal.take_profits else 'N/A'}\n"
+                                f"Lot: {self.settings.lot_size}\n"
+                                f"Source: {signal.source_channel}\n"
+                                f"Check MT5 connection & terminal."
                             )
                             return
                     else:
-                        await self._report(
-                            f"⏭️ Order SKIPPED - market {diff_pips:.0f} pips from entry (>10):\n"
-                            f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
-                            f"Source: {signal.source_channel}"
-                        )
-                        return
+                        # Market is > 4 pips from entry — place limit order
+                        # but adjust entry 4 pips closer to market for faster fill
+                        original_entry = signal.entry
+                        pip = 0.1  # 1 pip in gold price units
+                        if signal.direction.upper() == "BUY":
+                            # For BUY: entry is below market, move entry UP 4 pips closer
+                            adjusted_entry = signal.entry + (4 * pip)
+                            # Don't go past current ask
+                            if adjusted_entry >= current_ask:
+                                adjusted_entry = signal.entry  # keep original if would be above market
+                            else:
+                                signal.entry = adjusted_entry
+                                self.logger.info(
+                                    f"@Gulljanali17: Entry adjusted +4 pips: {original_entry} -> {adjusted_entry}"
+                                )
+                        else:
+                            # For SELL: entry is above market, move entry DOWN 4 pips closer
+                            adjusted_entry = signal.entry - (4 * pip)
+                            # Don't go below current bid
+                            if adjusted_entry <= current_bid:
+                                adjusted_entry = signal.entry  # keep original if would be below market
+                            else:
+                                signal.entry = adjusted_entry
+                                self.logger.info(
+                                    f"@Gulljanali17: Entry adjusted -4 pips: {original_entry} -> {adjusted_entry}"
+                                )
+                        # Fall through to normal limit order placement
 
             await self._report(
                 f"⏭️ Order SKIPPED - market already past entry:\n"

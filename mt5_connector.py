@@ -350,14 +350,17 @@ class MT5Connector:
         result = mt5.order_send(request)
 
         if result is None:
-            self.logger.error(f"order_send returned None: {mt5.last_error()}")
+            err = mt5.last_error()
+            self.logger.error(f"order_send returned None: {err}")
             return None
 
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             self.logger.error(
                 f"Market order failed: retcode={result.retcode} "
-                f"comment={result.comment}"
+                f"comment={result.comment} "
+                f"request={request}"
             )
+            # Return specific error code for better debugging
             return -result.retcode
 
         self.logger.info(
