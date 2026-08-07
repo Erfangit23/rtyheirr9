@@ -484,15 +484,19 @@ def parse_format8(text: str, channel: str) -> Optional[Signal]:
     # Entry: range like 4252-4253 or single value 4252
     # Look after the direction keyword
     after_dir = full_text[dir_match.end():]
+    entries = []
     entry_match = re.search(r"([\d]+(?:\.\d+)?)\s*[-–]\s*([\d]+(?:\.\d+)?)", after_dir)
     if entry_match:
-        # Use first value of range as entry
+        # Range: both entries for dual order
         entry = float(entry_match.group(1))
+        entry2 = float(entry_match.group(2))
+        entries = [entry, entry2]
     else:
         # Try single entry value
         entry_match = re.search(r"(?:ENTRY|ENTRY\s*[::])?\s*([\d.]+)", after_dir)
         if entry_match:
             entry = float(entry_match.group(1))
+            entries = [entry]
         else:
             return None
 
@@ -517,6 +521,7 @@ def parse_format8(text: str, channel: str) -> Optional[Signal]:
         take_profits=take_profits,
         raw_text=text,
         source_channel=channel,
+        entries=entries,
     )
 
 

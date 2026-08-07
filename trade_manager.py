@@ -162,6 +162,10 @@ class TradeManager:
             dual_entry = True
             tp_index = 2
             self.logger.info("Channel @BrianTradingForex: placing dual entry orders (entry1->TP1, entry2->TP2)")
+        elif signal.source_channel == "@Eliz_fxac_ademy1":
+            dual_entry = True
+            tp_index = 2
+            self.logger.info("Channel @Eliz_fxac_ademy1: placing dual entry orders (closer->TP1, farther->TP2, breakeven on TP1)")
         else:
             tp_index = self.settings.default_tp_index
         if tp_index > len(signal.take_profits):
@@ -182,42 +186,49 @@ class TradeManager:
 
             entry1, entry2 = signal.entries[0], signal.entries[1]
             tp1_price = signal.take_profits[0]
+            tp2_price = signal.take_profits[1] if len(signal.take_profits) >= 2 else signal.take_profits[0]
 
-            # Adjust TPs 10 pips closer to entry to increase fill probability
-            # For BUY: lower the TP by 1.0 (10 pips)
-            # For SELL: raise the TP by 1.0 (10 pips)
-            tp_adjustment = 1.0  # 10 pips in price units for gold
-            if signal.direction.upper() == "BUY":
-                tp1_price = tp1_price - tp_adjustment
-                self.logger.info(f"TP1 adjusted -10 pips: {signal.take_profits[0]} -> {tp1_price}")
-            else:  # SELL
-                tp1_price = tp1_price + tp_adjustment
-                self.logger.info(f"TP1 adjusted +10 pips: {signal.take_profits[0]} -> {tp1_price}")
-
-            # Cap TP2 at 150 pips profit from the second entry
-            pip_size = 0.1  # Gold: 1 pip = 0.1 price units
-            max_tp_pips = 150
-            if signal.direction.upper() == "BUY":
-                tp2_price_capped = entry2 + (max_tp_pips * pip_size)
-                tp2_price_capped = tp2_price_capped - tp_adjustment  # Also adjust closer
-            else:  # SELL
-                tp2_price_capped = entry2 - (max_tp_pips * pip_size)
-                tp2_price_capped = tp2_price_capped + tp_adjustment  # Also adjust closer
-            # Use channel TP2 if it's closer than 150 pips, otherwise use capped
-            if len(signal.take_profits) >= 2:
-                channel_tp2 = signal.take_profits[1]
+            if signal.source_channel == "@BrianTradingForex":
+                # Adjust TPs 10 pips closer to entry to increase fill probability
+                # For BUY: lower the TP by 1.0 (10 pips)
+                # For SELL: raise the TP by 1.0 (10 pips)
+                tp_adjustment = 1.0  # 10 pips in price units for gold
                 if signal.direction.upper() == "BUY":
-                    tp2_price = min(channel_tp2, tp2_price_capped)
-                else:
-                    tp2_price = max(channel_tp2, tp2_price_capped)
-            else:
-                tp2_price = tp2_price_capped
+                    tp1_price = tp1_price - tp_adjustment
+                    self.logger.info(f"TP1 adjusted -10 pips: {signal.take_profits[0]} -> {tp1_price}")
+                else:  # SELL
+                    tp1_price = tp1_price + tp_adjustment
+                    self.logger.info(f"TP1 adjusted +10 pips: {signal.take_profits[0]} -> {tp1_price}")
 
-            self.logger.info(
-                f"BrianTradingForex: TP2 capped at 150 pips: {tp2_price} "
-                f"(channel TP2={signal.take_profits[1] if len(signal.take_profits) >= 2 else 'N/A'}, "
-                f"capped={tp2_price_capped})"
-            )
+                # Cap TP2 at 150 pips profit from the second entry
+                pip_size = 0.1  # Gold: 1 pip = 0.1 price units
+                max_tp_pips = 150
+                if signal.direction.upper() == "BUY":
+                    tp2_price_capped = entry2 + (max_tp_pips * pip_size)
+                    tp2_price_capped = tp2_price_capped - tp_adjustment  # Also adjust closer
+                else:  # SELL
+                    tp2_price_capped = entry2 - (max_tp_pips * pip_size)
+                    tp2_price_capped = tp2_price_capped + tp_adjustment  # Also adjust closer
+                # Use channel TP2 if it's closer than 150 pips, otherwise use capped
+                if len(signal.take_profits) >= 2:
+                    channel_tp2 = signal.take_profits[1]
+                    if signal.direction.upper() == "BUY":
+                        tp2_price = min(channel_tp2, tp2_price_capped)
+                    else:
+                        tp2_price = max(channel_tp2, tp2_price_capped)
+                else:
+                    tp2_price = tp2_price_capped
+
+                self.logger.info(
+                    f"BrianTradingForex: TP2 capped at 150 pips: {tp2_price} "
+                    f"(channel TP2={signal.take_profits[1] if len(signal.take_profits) >= 2 else 'N/A'}, "
+                    f"capped={tp2_price_capped})"
+                )
+            else:
+                # @Eliz_fxac_ademy1: use raw TP values, no adjustment
+                self.logger.info(
+                    f"Eliz_fxac_ademy1: TP1={tp1_price}, TP2={tp2_price} (no adjustment)"
+                )
 
             # Determine which entry is closer to market (fills first)
             # For BUY: higher entry = closer to market (price drops to hit it)
@@ -892,7 +903,7 @@ class TradeManager:
                 # Order still pending — check if price reached TP2
                 # If market hits TP2 without the entry filling, cancel the order
                 # Skip this check for dual-entry orders (BrianTradingForex) — they have their own TP
-                if trade.tp2 > 0 and trade.channel != "@BrianTradingForex":
+                if trade.tp2 > 0 and trade.channel not in ("@BrianTradingForex", "@Eliz_fxac_ademy1"):
                     prices = self.mt5.get_symbol_price(trade.symbol)
                     if prices:
                         current_bid, current_ask = prices
