@@ -424,7 +424,7 @@ class TradeManager:
             # Invalid price — market already moved past entry
             self.logger.warning(f"Order rejected - invalid price (market moved past entry)")
 
-            # For @Gulljanali17: adjust entry 3 pips closer to market for faster fill
+            # For @Gulljanali17: adjust entry 10 pips closer to market for faster fill
             if signal.source_channel == "@Gulljanali17":
                 prices = self.mt5.get_symbol_price(signal.symbol)
                 if prices:
@@ -433,24 +433,24 @@ class TradeManager:
                     original_entry = signal.entry
 
                     if signal.direction.upper() == "BUY":
-                        # BUY limit: entry is below market, move 3 pips UP toward market
-                        adjusted_entry = round(signal.entry + (3 * pip), 2)
+                        # BUY limit: entry is below market, move 10 pips UP toward market
+                        adjusted_entry = round(signal.entry + (10 * pip), 2)
                         if adjusted_entry < current_ask:
                             signal.entry = adjusted_entry
                             self.logger.info(
-                                f"@Gulljanali17: Entry adjusted +3 pips: {original_entry} -> {adjusted_entry}"
+                                f"@Gulljanali17: Entry adjusted +10 pips: {original_entry} -> {adjusted_entry}"
                             )
                         else:
                             self.logger.info(
                                 f"@Gulljanali17: Entry kept at {original_entry} (adjusted would be past market)"
                             )
                     elif signal.direction.upper() == "SELL":
-                        # SELL limit: entry is above market, move 3 pips DOWN toward market
-                        adjusted_entry = round(signal.entry - (3 * pip), 2)
+                        # SELL limit: entry is above market, move 10 pips DOWN toward market
+                        adjusted_entry = round(signal.entry - (10 * pip), 2)
                         if adjusted_entry > current_bid:
                             signal.entry = adjusted_entry
                             self.logger.info(
-                                f"@Gulljanali17: Entry adjusted -3 pips: {original_entry} -> {adjusted_entry}"
+                                f"@Gulljanali17: Entry adjusted -10 pips: {original_entry} -> {adjusted_entry}"
                             )
                         else:
                             self.logger.info(
