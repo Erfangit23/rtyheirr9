@@ -457,6 +457,69 @@ def parse_format7(text: str, channel: str) -> Optional[Signal]:
     )
 
 
+def parse_format8(text: str, channel: str) -> Optional[Signal]:
+    """Parse Format 8: Eliz_fxac_ademy1 style.
+
+    Example:
+    GOLD Buy Limit 4252-4253
+
+    TP 4259
+    TP 4300
+
+    SL 4246
+    """
+    full_text = text.strip()
+
+    # Direction and order type: GOLD Buy Limit, XAUUSD Sell Limit, etc.
+    dir_match = re.search(
+        r"(?:GOLD|XAUUSD|XAU)\s+(BUY|SELL)\s*(?:LIMIT|STOP)?",
+        full_text,
+        re.IGNORECASE,
+    )
+    if not dir_match:
+        return None
+
+    direction = dir_match.group(1).upper()
+
+    # Entry: range like 4252-4253 or single value 4252
+    # Look after the direction keyword
+    after_dir = full_text[dir_match.end():]
+    entry_match = re.search(r"([\d]+(?:\.\d+)?)\s*[-–]\s*([\d]+(?:\.\d+)?)", after_dir)
+    if entry_match:
+        # Use first value of range as entry
+        entry = float(entry_match.group(1))
+    else:
+        # Try single entry value
+        entry_match = re.search(r"(?:ENTRY|ENTRY\s*[::])?\s*([\d.]+)", after_dir)
+        if entry_match:
+            entry = float(entry_match.group(1))
+        else:
+            return None
+
+    # Stop loss: SL 4246
+    sl_match = re.search(r"(?:SL|STOP\s*LOSS)\s*[:]?\s*([\d.]+)", full_text, re.IGNORECASE)
+    if not sl_match:
+        return None
+    stop_loss = float(sl_match.group(1))
+
+    # Take profits: TP 4259, TP 4300 (multiple lines)
+    tp_matches = re.findall(r"TP\s*[:]?\s*(\d[\d.]*)", full_text, re.IGNORECASE)
+    if not tp_matches:
+        return None
+
+    take_profits = [float(tp) for tp in tp_matches]
+
+    return Signal(
+        symbol="XAUUSD",
+        direction=direction,
+        entry=entry,
+        stop_loss=stop_loss,
+        take_profits=take_profits,
+        raw_text=text,
+        source_channel=channel,
+    )
+
+
 PARSERS = {
     "format1": parse_format1,
     "format2": parse_format2,
@@ -465,6 +528,7 @@ PARSERS = {
     "format5": parse_format5,
     "format6": parse_format6,
     "format7": parse_format7,
+    "format8": parse_format8,
 }
 
 
