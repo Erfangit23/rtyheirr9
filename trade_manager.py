@@ -1162,65 +1162,96 @@ class TradeManager:
     def _modify_position_sl(self, ticket: int, new_sl: float) -> bool:
         """Modify an open position's stop loss by ticket."""
         if not self.mt5.ensure_connected():
+            self.logger.error(f"SL modify: MT5 not connected for #{ticket}")
             return False
         try:
             import MetaTrader5 as mt5
             positions = mt5.positions_get(ticket=ticket)
             if not positions or len(positions) == 0:
-                self.logger.warning(f"Position #{ticket} not found for SL modify")
+                self.logger.warning(f"SL modify: Position #{ticket} not found (not an open position)")
                 return False
             pos = positions[0]
+            sym_info = mt5.symbol_info(pos.symbol)
+            if sym_info is None:
+                self.logger.error(f"SL modify: Symbol info not found for {pos.symbol}")
+                return False
+            digits = sym_info.digits
             request = {
                 "action": mt5.TRADE_ACTION_SLTP,
                 "position": ticket,
                 "symbol": pos.symbol,
-                "sl": round(new_sl, mt5.symbol_info(pos.symbol).digits),
+                "sl": round(new_sl, digits),
                 "tp": pos.tp,
             }
+            self.logger.info(
+                f"SL modify request: #{ticket} symbol={pos.symbol} "
+                f"new_sl={round(new_sl, digits)} current_sl={pos.sl}"
+            )
             result = mt5.order_send(request)
             if result is None:
-                self.logger.error(f"SL modify returned None: {mt5.last_error()}")
+                self.logger.error(f"SL modify: order_send None for #{ticket}: {mt5.last_error()}")
                 return False
             if result.retcode != mt5.TRADE_RETCODE_DONE:
-                self.logger.error(f"SL modify failed: retcode={result.retcode}")
+                self.logger.error(
+                    f"SL modify FAILED #{ticket}: retcode={result.retcode} "
+                    f"comment={result.comment}"
+                )
                 return False
-            self.logger.info(f"SL modified for position #{ticket}: {new_sl}")
+            self.logger.info(f"SL modify SUCCESS #{ticket}: SL -> {new_sl}")
             return True
         except Exception as e:
-            self.logger.error(f"SL modify error: {e}")
+            self.logger.error(f"SL modify exception #{ticket}: {e}", exc_info=True)
             return False
 
     def _modify_order_sl(self, ticket: int, new_sl: float) -> bool:
         """Modify a pending order's stop loss by ticket."""
         if not self.mt5.ensure_connected():
+            self.logger.error(f"Order SL modify: MT5 not connected for #{ticket}")
             return False
         try:
             import MetaTrader5 as mt5
             orders = mt5.orders_get(ticket=ticket)
             if not orders or len(orders) == 0:
-                self.logger.warning(f"Pending order #{ticket} not found for SL modify")
+                self.logger.warning(f"Order SL modify: Pending order #{ticket} not found")
                 return False
             order = orders[0]
+            sym_info = mt5.symbol_info(order.symbol)
+            digits = sym_info.digits if sym_info else 2
             request = {
                 "action": mt5.TRADE_ACTION_MODIFY,
                 "order": ticket,
                 "symbol": order.symbol,
                 "price": order.price_open,
-                "sl": round(new_sl, mt5.symbol_info(order.symbol).digits),
+                "sl": round(new_sl, digits),
                 "tp": order.tp,
                 "expiration": order.time_expiration,
                 "type_time": order.type_time,
                 "type_filling": order.type_filling,
             }
+            self.logger.info(
+                f"Order SL modify request: #{ticket} symbol={order.symbol} "
+                f"sl={round(new_sl, digits)} filling={order.type_filling}"
+            )
             result = mt5.order_send(request)
-            if result is None:
-                self.logger.error(f"Order SL modify returned None: {mt5.last_error()}")
-                return False
-            if result.retcode != mt5.TRADE_RETCODE_DONE:
-                self.logger.error(f"Order SL modify failed: retcode={result.retcode}")
-                return False
-            self.logger.info(f"SL modified for pending order #{ticket}: {new_sl}")
-            return True
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(f"Order SL modify SUCCESS #{ticket}: SL -> {new_sl}")
+                return True
+            # Try alternative filling modes
+            for alt_mode in [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]:
+                if alt_mode == order.type_filling:
+                    continue
+                self.logger.info(f"Retrying order SL with filling mode {alt_mode}")
+                request["type_filling"] = alt_mode
+                result = mt5.order_send(request)
+                if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    self.logger.info(f"Order SL SUCCESS (alt filling {alt_mode}) #{ticket}: SL -> {new_sl}")
+                    return True
+            self.logger.error(
+                f"Order SL modify FAILED #{ticket}: "
+                f"retcode={result.retcode if result else 'None'} "
+                f"comment={result.comment if result else 'N/A'}"
+            )
+            return False
         except Exception as e:
-            self.logger.error(f"Order SL modify error: {e}")
+            self.logger.error(f"Order SL modify exception #{ticket}: {e}", exc_info=True)
             return False

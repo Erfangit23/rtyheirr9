@@ -194,14 +194,14 @@ async def main():
 
     tg_manager.register_command_handler(command_callback)
 
-    # Start trade update checker (runs every 10 seconds)
+    # Start trade update checker (runs every 5 seconds for fast breakeven detection)
     async def trade_update_loop():
         while True:
             try:
                 await trade_manager.check_trade_updates()
             except Exception as e:
                 logger.error(f"Trade update check error: {e}")
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
 
     # Start MT5 keepalive (reconnect if needed every 60 seconds)
     async def mt5_keepalive_loop():
