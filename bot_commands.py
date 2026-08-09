@@ -98,7 +98,9 @@ class CommandHandler:
                 "/report - Today's trade summary\n"
                 "/backtest - Backtest a channel's signals\n"
                 "/makeaion - Enable AI signal parsing\n"
-                "/makeaioff - Disable AI signal parsing\n\n"
+                "/makeaioff - Disable AI signal parsing\n"
+                "/248on - Enable 248 lot doubling mode\n"
+                "/248off - Disable 248 mode (reset)\n\n"
                 "🔐 To change settings, send:\n"
                 "/change - Start settings change flow\n\n"
                 "⚠️ Default password: Amin123"
@@ -133,6 +135,23 @@ class CommandHandler:
         if text.lower() == "/makeaioff":
             self.settings.set_ai_mode(False)
             return "⚙️ AI mode is now OFF. Signals will be parsed by regex parsers."
+
+        if text.lower() == "/248on":
+            self.settings.set_mode_248(True)
+            return (
+                "✳️ 248 mode is now ON\n"
+                "Lot sizes will double after each SL hit per channel.\n"
+                "Sequence: 0.01 → 0.02 → 0.04 → 0.08 → ...\n"
+                "Resets to base lot after TP hit."
+            )
+
+        if text.lower() == "/248off":
+            self.settings.set_mode_248(False)
+            return (
+                "⏹ 248 mode is now OFF\n"
+                "All channel lot multipliers reset to 1x.\n"
+                "Trading with base lot size."
+            )
 
         # --- Password handling ---
         if user_id in self._awaiting_password:
@@ -277,9 +296,12 @@ class CommandHandler:
             f"Max SL (per trade): {p['max_sl_pips']} pips\n"
             f"Max SL (per day): {p['max_daily_sl_pips']} pips\n"
             f"Bot Active: {'Yes' if p['bot_active'] else 'No'}\n"
-            f"AI Mode: {'ON (DeepSeek V4 Flash)' if p['ai_mode'] else 'OFF (regex parsers)'}\n\n"
-            f"Send /change to modify (password required)\n"
-            f"Send /makeaion or /makeaioff to toggle AI mode"
+            f"AI Mode: {'ON (DeepSeek V4 Flash)' if p['ai_mode'] else 'OFF (regex parsers)'}\n"
+            f"248 Mode: {'ON (lot doubling on SL)' if self.settings.mode_248 else 'OFF'}\n"
+            f"Base Lot: {self.settings.lot_size}\n"
+            f"\nSend /change to modify (password required)\n"
+            f"Send /makeaion or /makeaioff to toggle AI mode\n"
+            f"Send /248on or /248off to toggle 248 mode"
         )
 
     def _cmd_trades(self) -> str:

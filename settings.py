@@ -137,6 +137,47 @@ class Settings:
             self._data.setdefault("trading", {})["ai_mode"] = value
         self.save()
 
+    # --- 248 Mode (martingale lot doubling per channel on SL) ---
+    @property
+    def mode_248(self) -> bool:
+        return self.trading.get("mode_248", False)
+
+    def set_mode_248(self, value: bool):
+        with self._lock:
+            self._data.setdefault("trading", {})["mode_248"] = value
+            if not value:
+                # Reset all channel multipliers when turning off
+                self._data.setdefault("trading", {}).pop("mode_248_channels", None)
+        self.save()
+
+    @property
+    def mode_248_channels(self) -> dict:
+        """Returns {channel_id: current_lot_multiplier} for 248 mode."""
+        return self.trading.get("mode_248_channels", {})
+
+    def get_248_multiplier(self, channel_id: str) -> float:
+        """Get current lot multiplier for a channel in 248 mode."""
+        if not self.mode_248:
+            return 1.0
+        return self.mode_248_channels.get(channel_id, 1.0)
+
+    def set_248_multiplier(self, channel_id: str, multiplier: float):
+        """Set lot multiplier for a channel."""
+        with self._lock:
+            self._data.setdefault("trading", {}).setdefault("mode_248_channels", {})[channel_id] = multiplier
+        self.save()
+
+    def reset_248_multiplier(self, channel_id: str):
+        """Reset multiplier to 1.0 for a channel (after TP hit)."""
+        with self._lock:
+            channels = self._data.setdefault("trading", {}).get("mode_248_channels", {})
+            if channel_id in channels:
+                channels[channel_id] = 1.0
+            else:
+                channels[channel_id] = 1.0
+            self._data.setdefault("trading", {})["mode_248_channels"] = channels
+        self.save()
+
     # --- Setters ---
     def set_lot_size(self, value: float):
         with self._lock:
