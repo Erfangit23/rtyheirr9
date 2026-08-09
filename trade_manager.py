@@ -1167,14 +1167,10 @@ class TradeManager:
             )
             return
         current_mult = self.settings.get_248_multiplier(channel)
-        new_mult = current_mult * 2
-        # Cap at 128x to prevent runaway
-        if new_mult > 128:
-            new_mult = 128
-            self.logger.warning(f"248 mode: {channel} hit max multiplier cap (128x)")
-        self.settings.set_248_multiplier(channel, new_mult)
+        self.settings.advance_248_step(channel)
+        new_mult = self.settings.get_248_multiplier(channel)
         self.logger.info(
-            f"248 mode: {channel} SL hit — next lot multiplier: {new_mult}x "
+            f"248 mode: {channel} SL hit — lot multiplier: {current_mult}x -> {new_mult}x "
             f"(lot will be {round(self.settings.lot_size * new_mult, 2)})"
         )
 

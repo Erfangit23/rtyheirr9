@@ -138,6 +138,14 @@ class Settings:
         self.save()
 
     # --- 248 Mode (martingale lot doubling per channel on SL) ---
+    # Default sequence: 1, 2, 4, 8, 16, 32, 64, 128 (powers of 2)
+    # Fibonacci sequence for @Gulljanali17: 1, 2, 3, 5, 8, 13, 21, 34
+    DEFAULT_248_SEQ = [1, 2, 4, 8, 16, 32, 64, 128]
+    FIBO_248_SEQ = [1, 2, 3, 5, 8, 13, 21, 34]
+
+    # Channels that use Fibonacci sequence instead of doubling
+    FIBO_CHANNELS = ["@Gulljanali17"]
+
     @property
     def mode_248(self) -> bool:
         return self.trading.get("mode_248", False)
@@ -146,37 +154,48 @@ class Settings:
         with self._lock:
             self._data.setdefault("trading", {})["mode_248"] = value
             if not value:
-                # Reset all channel multipliers when turning off
+                # Reset all channel steps when turning off
                 self._data.setdefault("trading", {}).pop("mode_248_channels", None)
         self.save()
 
     @property
     def mode_248_channels(self) -> dict:
-        """Returns {channel_id: current_lot_multiplier} for 248 mode."""
+        """Returns {channel_id: step_index} for 248 mode."""
         return self.trading.get("mode_248_channels", {})
+
+    def _get_248_sequence(self, channel_id: str) -> list:
+        """Get the lot sequence for a channel."""
+        if channel_id in self.FIBO_CHANNELS:
+            return self.FIBO_248_SEQ
+        return self.DEFAULT_248_SEQ
 
     def get_248_multiplier(self, channel_id: str) -> float:
         """Get current lot multiplier for a channel in 248 mode."""
         if not self.mode_248:
             return 1.0
-        return self.mode_248_channels.get(channel_id, 1.0)
+        step = self.mode_248_channels.get(channel_id, 0)
+        seq = self._get_248_sequence(channel_id)
+        if step >= len(seq):
+            return float(seq[-1])  # Cap at last value
+        return float(seq[step])
 
-    def set_248_multiplier(self, channel_id: str, multiplier: float):
-        """Set lot multiplier for a channel."""
+    def advance_248_step(self, channel_id: str):
+        """Advance to next step in the sequence (after SL hit)."""
         with self._lock:
-            self._data.setdefault("trading", {}).setdefault("mode_248_channels", {})[channel_id] = multiplier
-        self.save()
+            channels = self._data.setdefault("trading", {}).setdefault("mode_248_channels", {})
+            current = channels.get(channel_id, 0)
+            seq = self._get_248_sequence(channel_id)
+            if current < len(seq) - 1:
+                channels[channel_id] = current + 1
+            # If already at max, stay there
+            self.save()
 
     def reset_248_multiplier(self, channel_id: str):
-        """Reset multiplier to 1.0 for a channel (after TP hit)."""
+        """Reset step to 0 for a channel (after TP hit)."""
         with self._lock:
-            channels = self._data.setdefault("trading", {}).get("mode_248_channels", {})
-            if channel_id in channels:
-                channels[channel_id] = 1.0
-            else:
-                channels[channel_id] = 1.0
-            self._data.setdefault("trading", {})["mode_248_channels"] = channels
-        self.save()
+            channels = self._data.setdefault("trading", {}).setdefault("mode_248_channels", {})
+            channels[channel_id] = 0
+            self.save()
 
     # --- Setters ---
     def set_lot_size(self, value: float):
