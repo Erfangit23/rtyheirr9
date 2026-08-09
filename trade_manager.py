@@ -670,7 +670,7 @@ class TradeManager:
                             self._on_tp_hit(trade.channel)
                         else:
                             trade.status = TradeStatus.SL_HIT.value
-                            self._on_sl_hit(trade.channel)
+                            self._on_sl_hit(trade.channel, deal_info["profit"])
                         updated = True
                         self.logger.info(
                             f"Position #{trade.ticket} closed (profit={deal_info['profit']:.2f}), "
@@ -755,7 +755,7 @@ class TradeManager:
                             self._on_tp_hit(trade.channel)
                         else:
                             trade.status = TradeStatus.SL_HIT.value
-                            self._on_sl_hit(trade.channel)
+                            self._on_sl_hit(trade.channel, deal_info["profit"])
                     else:
                         trade.status = TradeStatus.CANCELLED.value
                     updated = True
@@ -842,7 +842,7 @@ class TradeManager:
                     else:
                         trade.status = TradeStatus.SL_HIT.value
                         status_emoji = "🛑 SL HIT"
-                        self._on_sl_hit(trade.channel)
+                        self._on_sl_hit(trade.channel, deal_info["profit"])
 
                     await self._report(
                         f"{status_emoji}:\n"
@@ -1153,9 +1153,18 @@ class TradeManager:
             )
         return lot
 
-    def _on_sl_hit(self, channel: str):
-        """Called when a trade hits SL — double the lot for next trade on this channel."""
+    def _on_sl_hit(self, channel: str, profit: float = None):
+        """Called when a trade hits SL — double the lot for next trade on this channel.
+        
+        If profit is close to 0 (breakeven close), don't double — it's not a real loss.
+        """
         if not self.settings.mode_248:
+            return
+        # Breakeven check: if profit is within ±$0.50, treat as breakeven (no loss)
+        if profit is not None and abs(profit) < 0.50:
+            self.logger.info(
+                f"248 mode: {channel} breakeven close (profit={profit:.2f}) — no lot doubling"
+            )
             return
         current_mult = self.settings.get_248_multiplier(channel)
         new_mult = current_mult * 2
