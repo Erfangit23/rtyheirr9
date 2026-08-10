@@ -152,9 +152,9 @@ class TradeManager:
         elif signal.source_channel == "@GoldVisionofficial":
             tp_index = 3
             self.logger.info("Channel @GoldVisionofficial: using TP3 as final TP, SL to entry on TP1/TP2")
-        elif signal.source_channel == "@forexkhan":
+        elif signal.source_channel in ("@forexkhan", "@khanbours", "@khanbourse"):
             tp_index = 1
-            self.logger.info("Channel @forexkhan: using TP1")
+            self.logger.info(f"Channel {signal.source_channel}: using TP1")
         elif signal.source_channel == "@Signal_Atlas":
             tp_index = 2
             self.logger.info("Channel @Signal_Atlas: using TP2")
@@ -526,7 +526,7 @@ class TradeManager:
             status=TradeStatus.PENDING.value,
             timestamp=now,
             raw_signal=signal.raw_text[:200],
-            tp2=0 if signal.source_channel == "@forexkhan" else (signal.take_profits[1] if len(signal.take_profits) >= 2 else (signal.take_profits[0] if signal.take_profits else 0)),
+            tp2=0 if signal.source_channel in ("@forexkhan", "@khanbours", "@khanbourse") else (signal.take_profits[1] if len(signal.take_profits) >= 2 else (signal.take_profits[0] if signal.take_profits else 0)),
             all_tps=list(signal.take_profits) if signal.source_channel in ("@gold_alicxzos110", "@GoldVisionofficial") else [],
         )
         self.trades.append(record)
@@ -958,7 +958,7 @@ class TradeManager:
                                 )
 
                 # For @forexkhan: cancel pending order if price reaches TP1 without filling
-                if trade.channel == "@forexkhan" and trade.tp > 0:
+                if trade.channel in ("@forexkhan", "@khanbours", "@khanbourse") and trade.tp > 0:
                     prices = self.mt5.get_symbol_price(trade.symbol)
                     if prices:
                         current_bid, current_ask = prices

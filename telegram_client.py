@@ -210,7 +210,7 @@ class TelegramManager:
 
             # Check if AI mode is enabled
             # Some channels use regex for signal parsing but AI for cancel/modify detection
-            regex_only_channels = ["@Gulljanali17", "@BrianTradingForex", "@forexkhan", "@GoldVisionofficial", "@Eliz_fxac_ademy1"]
+            regex_only_channels = ["@Gulljanali17", "@BrianTradingForex", "@forexkhan", "@khanbours", "@khanbourse", "@GoldVisionofficial", "@Eliz_fxac_ademy1"]
             use_ai = self.settings and self.settings.ai_mode
             use_ai_for_parsing = use_ai and matched_channel["id"] not in regex_only_channels
 
