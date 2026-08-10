@@ -829,8 +829,38 @@ class TradeManager:
                 })
 
             elif trade.ticket not in order_tickets and trade.ticket not in position_tickets:
-                # Order is gone — could be TP hit, SL hit, or cancelled
-                # Check deal history
+                # Order is gone — could be: filled (position created), TP hit, SL hit, or cancelled
+
+                # First: check if this order became a position (MT5 assigns different ticket)
+                # Look for positions matching our magic number and direction
+                position_found = False
+                for pos in positions:
+                    if pos.magic == 779900 and pos.symbol == trade.symbol:
+                        # Match by direction and proximity of entry/position price
+                        if trade.direction == "BUY" and pos.type == 0:  # POSITION_TYPE_BUY
+                            position_found = True
+                            # Update ticket to position ticket for future tracking
+                            trade.ticket = pos.ticket
+                            self.logger.info(
+                                f"Matched order #{trade.ticket} to position #{pos.ticket} (BUY)"
+                            )
+                            break
+                        elif trade.direction == "SELL" and pos.type == 1:  # POSITION_TYPE_SELL
+                            position_found = True
+                            trade.ticket = pos.ticket
+                            self.logger.info(
+                                f"Matched order #{trade.ticket} to position #{pos.ticket} (SELL)"
+                            )
+                            break
+
+                if position_found:
+                    # It's a filled position — mark as filled and continue
+                    trade.status = TradeStatus.FILLED.value
+                    updated = True
+                    self.logger.info(f"Order #{trade.ticket} filled — matched to position")
+                    continue
+
+                # If no position match, the trade is really closed — check deal history
                 deal_info = self._check_deal_history(trade.ticket)
                 if deal_info:
                     if deal_info["profit"] > 0:
