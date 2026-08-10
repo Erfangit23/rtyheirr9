@@ -548,8 +548,8 @@ def parse_signal(text: str, channel: str, fmt: str = "auto") -> Optional[Signal]
     If fmt is 'auto', try all parsers.
     If fmt is a known format name, use that parser only.
     """
-    # Quick check: must mention XAUUSD or gold
-    if "XAUUSD" not in text.upper() and "XAU" not in text.upper():
+    # Quick check: must mention XAUUSD, XAU, or GOLD
+    if "XAUUSD" not in text.upper() and "XAU" not in text.upper() and "GOLD" not in text.upper():
         return None
 
     if fmt != "auto" and fmt in PARSERS:
