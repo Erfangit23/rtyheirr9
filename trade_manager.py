@@ -1140,15 +1140,17 @@ class TradeManager:
         """Get lot size for a channel, applying 248 mode multiplier if active."""
         base_lot = self.settings.lot_size
         if not self.settings.mode_248:
+            self.logger.debug(f"_get_lot_size: 248 OFF, base_lot={base_lot}")
             return base_lot
         multiplier = self.settings.get_248_multiplier(channel)
         lot = base_lot * multiplier
         # Round to 2 decimal places to avoid MT5 rejection
         lot = round(lot, 2)
-        if multiplier > 1.0:
-            self.logger.info(
-                f"248 mode: {channel} lot={lot} (base={base_lot} x{multiplier})"
-            )
+        if lot < 0.01:
+            lot = 0.01  # MT5 minimum
+        self.logger.info(
+            f"248 mode: {channel} lot={lot} (base={base_lot} x{multiplier})"
+        )
         return lot
 
     def _on_sl_hit(self, channel: str, profit: float = None):
@@ -1184,16 +1186,20 @@ class TradeManager:
             self.settings.reset_248_multiplier(channel)
 
     def _check_deal_history(self, ticket: int) -> Optional[dict]:
-        """Check deal history for a closed position by ticket."""
+        """Check deal history for a closed position by ticket (order or position)."""
         try:
             from datetime import datetime, timezone, timedelta
             utc_to = datetime.now(timezone.utc)
             utc_from = utc_to - timedelta(hours=24)
             deals = self.mt5.ensure_connected() and __import__("MetaTrader5").history_deals_get(utc_from, utc_to)
             if deals:
+                # Find the LAST deal matching this ticket (last deal = close deal with actual PnL)
+                matched = None
                 for deal in deals:
                     if deal.position_id == ticket or deal.order == ticket:
-                        return {"profit": deal.profit, "price": deal.price}
+                        matched = deal  # Keep the last match (close deal has actual PnL)
+                if matched:
+                    return {"profit": matched.profit, "price": matched.price}
         except Exception as e:
             self.logger.error(f"Deal history check error: {e}")
         return None
