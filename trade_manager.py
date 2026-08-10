@@ -176,7 +176,7 @@ class TradeManager:
             )
 
         # For @Gulljanali17: adjust entry 10 pips closer to market BEFORE placing order
-        if signal.source_channel == "@Gulljanali17":
+        if signal.source_channel in ("@Gulljanali17", "@bttesteamin"):
             prices = self.mt5.get_symbol_price(signal.symbol)
             if prices:
                 current_bid, current_ask = prices
