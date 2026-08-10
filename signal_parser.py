@@ -506,8 +506,12 @@ def parse_format8(text: str, channel: str) -> Optional[Signal]:
         return None
     stop_loss = float(sl_match.group(1))
 
-    # Take profits: TP 4259, TP 4300 (multiple lines)
-    tp_matches = re.findall(r"TP\s*[:]?\s*(\d[\d.]*)", full_text, re.IGNORECASE)
+    # Take profits: TP 4259, TP: 4259, TP1 4259, TP2: 4300
+    # Match TP optionally followed by digit (TP1, TP2), then the price
+    tp_matches = re.findall(r"TP\d?\s*[:]??\s+(\d[\d.]*)", full_text, re.IGNORECASE)
+    if not tp_matches:
+        # Fallback: try without space requirement (TP:4259)
+        tp_matches = re.findall(r"TP\d?\s*[:]?\s*(\d[\d.]*)", full_text, re.IGNORECASE)
     if not tp_matches:
         return None
 

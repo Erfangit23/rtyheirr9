@@ -276,9 +276,15 @@ class TelegramManager:
 
             if not signal:
                 # Regex fallback (also used when AI is off)
+                self.logger.info(f"Trying regex parser with fmt={fmt}: {text[:100]}")
                 signal = parse_signal(text, matched_channel["id"], fmt)
                 if not signal and fmt != "auto":
+                    self.logger.info(f"Regex fmt={fmt} failed, trying auto")
                     signal = parse_signal(text, matched_channel["id"], "auto")
+                if not signal:
+                    self.logger.warning(
+                        f"No parser matched. Channel={matched_channel['id']} fmt={fmt} text={text[:200]}"
+                    )
 
             if signal:
                 self.logger.info(f"Parsed signal: {signal}")
