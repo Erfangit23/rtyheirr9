@@ -175,6 +175,39 @@ class TradeManager:
                 f"({len(signal.take_profits)}). Using TP{tp_index}."
             )
 
+        # For @Gulljanali17: adjust entry 10 pips closer to market BEFORE placing order
+        if signal.source_channel == "@Gulljanali17":
+            prices = self.mt5.get_symbol_price(signal.symbol)
+            if prices:
+                current_bid, current_ask = prices
+                pip = 0.1  # 1 pip in gold price units
+                original_entry = signal.entry
+
+                if signal.direction.upper() == "BUY":
+                    # BUY limit: entry is below market, move 10 pips UP toward market
+                    adjusted_entry = round(signal.entry + (10 * pip), 2)
+                    if adjusted_entry < current_ask:
+                        signal.entry = adjusted_entry
+                        self.logger.info(
+                            f"@Gulljanali17: Entry adjusted +10 pips: {original_entry} -> {adjusted_entry}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"@Gulljanali17: Entry kept at {original_entry} (adjusted would be past market)"
+                        )
+                elif signal.direction.upper() == "SELL":
+                    # SELL limit: entry is above market, move 10 pips DOWN toward market
+                    adjusted_entry = round(signal.entry - (10 * pip), 2)
+                    if adjusted_entry > current_bid:
+                        signal.entry = adjusted_entry
+                        self.logger.info(
+                            f"@Gulljanali17: Entry adjusted -10 pips: {original_entry} -> {adjusted_entry}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"@Gulljanali17: Entry kept at {original_entry} (adjusted would be past market)"
+                        )
+
         if dual_entry:
             # Place two separate orders with different entries and TPs.
             # The closer-to-market entry gets TP1 (fills first).
@@ -423,41 +456,6 @@ class TradeManager:
         if ticket == -10015:
             # Invalid price — market already moved past entry
             self.logger.warning(f"Order rejected - invalid price (market moved past entry)")
-
-            # For @Gulljanali17: adjust entry 10 pips closer to market for faster fill
-            if signal.source_channel == "@Gulljanali17":
-                prices = self.mt5.get_symbol_price(signal.symbol)
-                if prices:
-                    current_bid, current_ask = prices
-                    pip = 0.1  # 1 pip in gold price units
-                    original_entry = signal.entry
-
-                    if signal.direction.upper() == "BUY":
-                        # BUY limit: entry is below market, move 10 pips UP toward market
-                        adjusted_entry = round(signal.entry + (10 * pip), 2)
-                        if adjusted_entry < current_ask:
-                            signal.entry = adjusted_entry
-                            self.logger.info(
-                                f"@Gulljanali17: Entry adjusted +10 pips: {original_entry} -> {adjusted_entry}"
-                            )
-                        else:
-                            self.logger.info(
-                                f"@Gulljanali17: Entry kept at {original_entry} (adjusted would be past market)"
-                            )
-                    elif signal.direction.upper() == "SELL":
-                        # SELL limit: entry is above market, move 10 pips DOWN toward market
-                        adjusted_entry = round(signal.entry - (10 * pip), 2)
-                        if adjusted_entry > current_bid:
-                            signal.entry = adjusted_entry
-                            self.logger.info(
-                                f"@Gulljanali17: Entry adjusted -10 pips: {original_entry} -> {adjusted_entry}"
-                            )
-                        else:
-                            self.logger.info(
-                                f"@Gulljanali17: Entry kept at {original_entry} (adjusted would be past market)"
-                            )
-                # Fall through to normal limit order placement
-
             await self._report(
                 f"⏭️ Order SKIPPED - market already past entry:\n"
                 f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
