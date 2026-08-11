@@ -153,6 +153,36 @@ class CommandHandler:
                 "Trading with base lot size."
             )
 
+        if text.lower() == "/248status":
+            if not self.settings.mode_248:
+                return "248 mode is OFF. Send /248on to enable."
+            channels = self.settings.mode_248_channels
+            lines = [f"✳️ 248 Mode — ACTIVE\nBase lot: {self.settings.lot_size}\n"]
+            if not channels:
+                lines.append("All channels at step 0 (1x base lot). No SL hits yet.")
+            else:
+                for ch_id, step in channels.items():
+                    mult = self.settings.get_248_multiplier(ch_id)
+                    lot = round(self.settings.lot_size * mult, 2)
+                    seq_type = "Fibo" if ch_id in self.settings.FIBO_CHANNELS else "2x"
+                    lines.append(f"  {ch_id}: step={step} mult={mult}x lot={lot} [{seq_type}]")
+            return "\n".join(lines)
+
+        if text.lower() == "/248test":
+            if not self.settings.mode_248:
+                return "248 mode is OFF. Send /248on first, then /248test."
+            # Force a test multiplier on all channels
+            test_ch = self.settings.channels[0]["id"] if self.settings.channels else "@forexkhan"
+            self.settings.advance_248_step(test_ch)
+            mult = self.settings.get_248_multiplier(test_ch)
+            lot = round(self.settings.lot_size * mult, 2)
+            return (
+                f"🧪 248 TEST — forced SL on {test_ch}\n"
+                f"Multiplier: {mult}x\n"
+                f"Next lot for {test_ch}: {lot}\n"
+                f"Check /248status to verify."
+            )
+
         # --- Password handling ---
         if user_id in self._awaiting_password:
             if text == self.settings.settings_password:
