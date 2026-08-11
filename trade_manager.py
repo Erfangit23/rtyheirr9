@@ -163,9 +163,8 @@ class TradeManager:
             tp_index = 2
             self.logger.info("Channel @BrianTradingForex: placing dual entry orders (entry1->TP1, entry2->TP2)")
         elif signal.source_channel == "@Eliz_fxac_ademy1":
-            dual_entry = True
-            tp_index = 2
-            self.logger.info("Channel @Eliz_fxac_ademy1: placing dual entry orders (closer->TP1, farther->TP2, breakeven on TP1)")
+            tp_index = 1
+            self.logger.info("Channel @Eliz_fxac_ademy1: using TP1, single entry (first value of range)")
         else:
             tp_index = self.settings.default_tp_index
         if tp_index > len(signal.take_profits):
