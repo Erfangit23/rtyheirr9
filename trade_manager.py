@@ -43,6 +43,8 @@ class TradeRecord:
     tp2: float = 0.0  # TP2 price for cancellation logic
     all_tps: list = None  # All TP prices for step-up SL (gold_alicxzos110)
     sl_step: int = 0  # Current SL step reached (0=none, 1=TP1, 2=TP2, 3=TP3)
+    participates_248: bool = True  # False => flat base lot, doesn't drive the 248 multiplier
+                                   # (used for the bigger-RR leg of @BrianTradingForex dual entry)
 
     def __post_init__(self):
         if self.all_tps is None:
@@ -288,6 +290,15 @@ class TradeManager:
 
             # Place both orders
             from signal_parser import Signal as Sig
+
+            # Lot sizing per leg:
+            #  - "first"  = closer entry (TP1, smaller TP) -> follows 248 (doubles on SL)
+            #  - "second" = farther entry (TP2, bigger RR) -> flat base lot, OUT of 248
+            def _leg_lot(lbl):
+                if lbl == "first":
+                    return self._get_lot_size(signal.source_channel)
+                return self.settings.lot_size  # flat, no 248
+
             results = []
             for entry_val, tp_val, label in [
                 (first_entry, first_tp, "first"),
@@ -304,7 +315,7 @@ class TradeManager:
                 )
                 ticket = self.mt5.place_limit_order(
                     signal=mod_signal,
-                    lot_size=self._get_lot_size(signal.source_channel),
+                    lot_size=_leg_lot(label),
                     tp_index=1,  # Only 1 TP in the modified signal
                     max_sl_pips=self.settings.max_sl_pips,
                 )
@@ -338,7 +349,8 @@ class TradeManager:
                         sl=signal.stop_loss,
                         tp=tp_val,
                         tp_index=1,
-                        lot_size=self._get_lot_size(signal.source_channel),
+                        lot_size=_leg_lot(label),
+                        participates_248=(label == "first"),
                         status=TradeStatus.REJECTED_SL.value,
                         timestamp=now,
                         raw_signal=signal.raw_text[:200],
@@ -380,7 +392,8 @@ class TradeManager:
                         sl=signal.stop_loss,
                         tp=tp_val,
                         tp_index=1,
-                        lot_size=self._get_lot_size(signal.source_channel),
+                        lot_size=_leg_lot(label),
+                        participates_248=(label == "first"),
                         status=TradeStatus.REJECTED_SL.value,
                         timestamp=now,
                         raw_signal=signal.raw_text[:200],
@@ -399,16 +412,17 @@ class TradeManager:
                     sl=signal.stop_loss,
                     tp=tp_val,
                     tp_index=1,
-                    lot_size=self._get_lot_size(signal.source_channel),
+                    lot_size=_leg_lot(label),
+                    participates_248=(label == "first"),
                     status=TradeStatus.PENDING.value,
                     timestamp=now,
                     raw_signal=signal.raw_text[:200],
                     tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else 0,
                 )
                 self.trades.append(record)
-                order_desc = "closer entry (fills first)" if label == "first" else "farther entry (breakeven)"
+                order_desc = "closer, TP1, 248" if label == "first" else "farther, TP2, flat 0.01"
                 report_lines.append(
-                    f"  #{ticket} [{label}] Entry @ {entry_val} TP @ {tp_val} ({order_desc})"
+                    f"  #{ticket} [{label}] Entry @ {entry_val} TP @ {tp_val} lot {_leg_lot(label)} ({order_desc})"
                 )
 
             # Link orders for breakeven: when first order hits TP, move second order SL to its entry
@@ -424,7 +438,9 @@ class TradeManager:
 
             self._save_trades()
             report_lines.append(
-                f"SL: {signal.stop_loss} | Lot: {self._get_lot_size(signal.source_channel)} each\n"
+                f"SL: {signal.stop_loss}\n"
+                f"Lot: closer(TP1)={self._get_lot_size(signal.source_channel)} [248] | "
+                f"farther(TP2)={self.settings.lot_size} [flat 0.01]\n"
                 f"When first order hits TP1, second order SL moves to entry (risk-free)"
             )
             await self._report("\n".join(report_lines))
@@ -874,14 +890,18 @@ class TradeManager:
                 # If no position match, the trade is really closed — check deal history
                 deal_info = self._check_deal_history(trade.ticket)
                 if deal_info:
+                    # Only the participating leg drives the 248 multiplier.
+                    participates = getattr(trade, "participates_248", True)
                     if deal_info["profit"] > 0:
                         trade.status = TradeStatus.TP_HIT.value
                         status_emoji = "🎯 TP HIT"
-                        self._on_tp_hit(trade.channel)
+                        if participates:
+                            self._on_tp_hit(trade.channel)
                     else:
                         trade.status = TradeStatus.SL_HIT.value
                         status_emoji = "🛑 SL HIT"
-                        self._on_sl_hit(trade.channel, deal_info["profit"])
+                        if participates:
+                            self._on_sl_hit(trade.channel, deal_info["profit"])
 
                     await self._report(
                         f"{status_emoji}:\n"
@@ -1237,14 +1257,19 @@ class TradeManager:
         deal_info = self._check_deal_history(trade.ticket)
         if deal_info:
             profit = deal_info["profit"]
+            # Only the participating leg drives the 248 multiplier. The bigger-RR
+            # leg of a dual entry (participates_248=False) is flat-lot and ignored.
+            participates = getattr(trade, "participates_248", True)
             if profit > 0:
                 trade.status = TradeStatus.TP_HIT.value
                 status_emoji = "🎯 TP HIT"
-                self._on_tp_hit(trade.channel)
+                if participates:
+                    self._on_tp_hit(trade.channel)
             else:
                 trade.status = TradeStatus.SL_HIT.value
                 status_emoji = "🛑 SL HIT"
-                self._on_sl_hit(trade.channel, profit)
+                if participates:
+                    self._on_sl_hit(trade.channel, profit)
 
             self.logger.info(
                 f"Filled position #{trade.ticket} closed ({trade.channel}) "
