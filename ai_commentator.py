@@ -15,7 +15,9 @@ except ImportError:
     OpenAI = None
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NVIDIA_API_KEY = "nvapi-…uPdk"
+# NOTE: keep this identical to the key in ai_parser.py. A literal "…" here before
+# broke HTTP header encoding ("'ascii' codec can't encode character '\u2026'").
+NVIDIA_API_KEY = "nvapi-REMOVED"
 NVIDIA_MODEL = "deepseek-ai/deepseek-v4-flash"
 
 COMMENTARY_SYSTEM_PROMPT = """تو یک دستیار معاملات طلا هستی که به فارسی و با لحن طبیعی و انسانی صحبت می‌کنی.
