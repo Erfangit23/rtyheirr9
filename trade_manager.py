@@ -174,38 +174,37 @@ class TradeManager:
                 f"({len(signal.take_profits)}). Using TP{tp_index}."
             )
 
-        # For @Gulljanali17: adjust entry 10 pips closer to market BEFORE placing order
+        # For @Gulljanali17 / @bttesteamin: tighten SL 10 pips closer to entry.
+        # Reduces risk by ~$1 on a 0.01 lot (SL risk ~$10 instead of ~$11).
+        # Entry and TP are NOT touched.
         if signal.source_channel in ("@Gulljanali17", "@bttesteamin"):
-            prices = self.mt5.get_symbol_price(signal.symbol)
-            if prices:
-                current_bid, current_ask = prices
-                pip = 0.1  # 1 pip in gold price units
-                original_entry = signal.entry
+            pip = 0.1  # 1 pip in gold price units (10 pips = 1.0 price)
+            original_sl = signal.stop_loss
 
-                if signal.direction.upper() == "BUY":
-                    # BUY limit: entry is below market, move 10 pips UP toward market
-                    adjusted_entry = round(signal.entry + (10 * pip), 2)
-                    if adjusted_entry < current_ask:
-                        signal.entry = adjusted_entry
-                        self.logger.info(
-                            f"@Gulljanali17: Entry adjusted +10 pips: {original_entry} -> {adjusted_entry}"
-                        )
-                    else:
-                        self.logger.info(
-                            f"@Gulljanali17: Entry kept at {original_entry} (adjusted would be past market)"
-                        )
-                elif signal.direction.upper() == "SELL":
-                    # SELL limit: entry is above market, move 10 pips DOWN toward market
-                    adjusted_entry = round(signal.entry - (10 * pip), 2)
-                    if adjusted_entry > current_bid:
-                        signal.entry = adjusted_entry
-                        self.logger.info(
-                            f"@Gulljanali17: Entry adjusted -10 pips: {original_entry} -> {adjusted_entry}"
-                        )
-                    else:
-                        self.logger.info(
-                            f"@Gulljanali17: Entry kept at {original_entry} (adjusted would be past market)"
-                        )
+            if signal.direction.upper() == "BUY":
+                # BUY: SL sits below entry -> move it UP 10 pips (toward entry, tighter)
+                adjusted_sl = round(signal.stop_loss + (10 * pip), 2)
+                if adjusted_sl < signal.entry:
+                    signal.stop_loss = adjusted_sl
+                    self.logger.info(
+                        f"{signal.source_channel}: SL tightened +10 pips: {original_sl} -> {adjusted_sl}"
+                    )
+                else:
+                    self.logger.info(
+                        f"{signal.source_channel}: SL kept at {original_sl} (tightened would pass entry)"
+                    )
+            elif signal.direction.upper() == "SELL":
+                # SELL: SL sits above entry -> move it DOWN 10 pips (toward entry, tighter)
+                adjusted_sl = round(signal.stop_loss - (10 * pip), 2)
+                if adjusted_sl > signal.entry:
+                    signal.stop_loss = adjusted_sl
+                    self.logger.info(
+                        f"{signal.source_channel}: SL tightened -10 pips: {original_sl} -> {adjusted_sl}"
+                    )
+                else:
+                    self.logger.info(
+                        f"{signal.source_channel}: SL kept at {original_sl} (tightened would pass entry)"
+                    )
 
         if dual_entry:
             # Place two separate orders with different entries and TPs.
@@ -804,6 +803,19 @@ class TradeManager:
                                 f"Failed to move SL for #{trade.ticket} step {next_step}"
                             )
 
+            # --- Closure detection for ALL filled positions ---
+            # This is the engine behind the 248 lot-doubling: every filled
+            # position is watched until it closes (TP or SL), at which point
+            # _on_tp_hit / _on_sl_hit adjust the per-channel lot multiplier.
+            # Previously only the two step-up channels were monitored here, so
+            # SL hits on every other channel (incl. @Gulljanali17 fibo) were
+            # never detected and the lot never doubled.
+            if trade.status == TradeStatus.FILLED.value:
+                if trade.ticket not in position_tickets:
+                    await self._handle_filled_closure(trade)
+                    updated = True
+                    continue
+
             if trade.status != TradeStatus.PENDING.value:
                 continue
 
@@ -1214,21 +1226,116 @@ class TradeManager:
             )
             self.settings.reset_248_multiplier(channel)
 
+    async def _handle_filled_closure(self, trade: "TradeRecord") -> None:
+        """A filled position is no longer open — determine TP/SL and finalize.
+
+        Central closure path for ALL channels and the trigger for the 248
+        lot-doubling: _on_tp_hit resets the multiplier, _on_sl_hit advances it.
+        Linked-order breakeven for dual-entry channels is handled by the retry
+        loop in check_trade_updates(), so it is not duplicated here.
+        """
+        deal_info = self._check_deal_history(trade.ticket)
+        if deal_info:
+            profit = deal_info["profit"]
+            if profit > 0:
+                trade.status = TradeStatus.TP_HIT.value
+                status_emoji = "🎯 TP HIT"
+                self._on_tp_hit(trade.channel)
+            else:
+                trade.status = TradeStatus.SL_HIT.value
+                status_emoji = "🛑 SL HIT"
+                self._on_sl_hit(trade.channel, profit)
+
+            self.logger.info(
+                f"Filled position #{trade.ticket} closed ({trade.channel}) "
+                f"profit={profit:.2f} -> {trade.status}"
+            )
+            await self._report(
+                f"{status_emoji}:\n"
+                f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                f"Entry: {trade.entry} | SL: {trade.sl} | TP: {trade.tp}\n"
+                f"Profit: {profit:.2f} USD\n"
+                f"Source: {trade.channel}"
+            )
+            if self.settings.mode_248:
+                if profit > 0:
+                    await self._report(
+                        f"\n✳️ 248: {trade.channel} TP hit — lot reset to {self.settings.lot_size}"
+                    )
+                else:
+                    next_mult = self.settings.get_248_multiplier(trade.channel)
+                    next_lot = round(self.settings.lot_size * next_mult, 2)
+                    await self._report(
+                        f"\n✳️ 248: {trade.channel} SL hit — next lot will be {next_lot} (x{next_mult})"
+                    )
+            await self._commentary(
+                "tp_hit" if profit > 0 else "sl_hit",
+                {
+                    "channel": trade.channel,
+                    "direction": trade.direction,
+                    "symbol": trade.symbol,
+                    "entry": trade.entry,
+                    "sl": trade.sl,
+                    "tp": trade.tp,
+                    "lot_size": trade.lot_size,
+                    "profit": profit,
+                },
+            )
+        else:
+            # Position vanished with no deal history — stop retrying.
+            trade.status = TradeStatus.CANCELLED.value
+            self.logger.warning(
+                f"Position #{trade.ticket} not found and no deal history, "
+                f"marking as cancelled"
+            )
+            await self._report(
+                f"❌ Position closed (no deal history found):\n"
+                f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                f"Entry: {trade.entry} | Source: {trade.channel}"
+            )
+
     def _check_deal_history(self, ticket: int) -> Optional[dict]:
-        """Check deal history for a closed position by ticket (order or position)."""
+        """Find the closing deal(s) for a position by ticket and return net P/L.
+
+        Matches any deal whose position_id OR order equals the ticket, then sums
+        profit + commission + swap across all matching deals for the true net
+        result (accurate for the 248 breakeven guard).
+
+        The query window is timezone-safe: MT5 deal timestamps are in broker
+        server time, so we widen the window (2 days back, +14h forward) to absorb
+        any offset and always catch a just-closed deal.
+        """
         try:
             from datetime import datetime, timezone, timedelta
-            utc_to = datetime.now(timezone.utc)
-            utc_from = utc_to - timedelta(hours=24)
-            deals = self.mt5.ensure_connected() and __import__("MetaTrader5").history_deals_get(utc_from, utc_to)
-            if deals:
-                # Find the LAST deal matching this ticket (last deal = close deal with actual PnL)
-                matched = None
-                for deal in deals:
-                    if deal.position_id == ticket or deal.order == ticket:
-                        matched = deal  # Keep the last match (close deal has actual PnL)
-                if matched:
-                    return {"profit": matched.profit, "price": matched.price}
+            import MetaTrader5 as mt5
+            if not self.mt5.ensure_connected():
+                return None
+            now = datetime.now(timezone.utc)
+            utc_from = now - timedelta(days=2)
+            utc_to = now + timedelta(hours=14)
+            deals = mt5.history_deals_get(utc_from, utc_to)
+            if not deals:
+                return None
+            total_profit = 0.0
+            close_price = None
+            found = False
+            for deal in deals:
+                if deal.position_id == ticket or deal.order == ticket:
+                    found = True
+                    total_profit += (
+                        deal.profit
+                        + getattr(deal, "commission", 0.0)
+                        + getattr(deal, "swap", 0.0)
+                    )
+                    # DEAL_ENTRY_OUT (==1) is the closing leg
+                    if getattr(deal, "entry", None) == mt5.DEAL_ENTRY_OUT:
+                        close_price = deal.price
+            if found:
+                self.logger.info(
+                    f"Deal history for #{ticket}: net profit={total_profit:.2f} "
+                    f"close={close_price}"
+                )
+                return {"profit": total_profit, "price": close_price}
         except Exception as e:
             self.logger.error(f"Deal history check error: {e}")
         return None

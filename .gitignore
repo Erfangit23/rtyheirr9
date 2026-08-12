@@ -7,3 +7,4 @@ data/
 logs/
 config.json
 config.json.bak
+.openclaw/

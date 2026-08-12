@@ -15,7 +15,10 @@ class Settings:
     def __init__(self, config_path: str = "config.json", logger: Optional[logging.Logger] = None):
         self.config_path = config_path
         self.logger = logger or logging.getLogger("xau_trader")
-        self._lock = threading.Lock()
+        # Reentrant lock: several methods (advance_248_step, reset_248_multiplier,
+        # set_channel_active) call self.save() while already holding the lock, and
+        # save() re-acquires it. A plain Lock deadlocks there; RLock allows it.
+        self._lock = threading.RLock()
         self._data: dict = {}
         self.load()
 
