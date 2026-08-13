@@ -1,8 +1,13 @@
 """
-Test: @Gulljanali17 / @bttesteamin SL tightening.
+Test: @Gulljanali17 / @bttesteamin entry+SL adjustment.
 
-Verifies that for these two channels the SL is moved 10 pips closer to entry
-(reducing risk), while the ENTRY and all TAKE-PROFIT levels are left untouched.
+Behavior under test:
+  - Entry moves 10 pips closer to market (BUY 4400 -> 4401, SELL 4400 -> 4399).
+  - SL tightens 20 pips toward the (adjusted) entry.
+  - On a symmetric 100-pip signal this yields $9 SL / $9 TP (1:1), i.e. the
+    SL distance from the adjusted entry equals the TP1 distance from it.
+  - TP levels themselves are not modified.
+  - Other channels are left alone.
 
 Pure mocks — no MT5 connection, no Telegram, no network.
 Run:  python test_sl_adjust.py
@@ -10,11 +15,10 @@ Run:  python test_sl_adjust.py
 
 import sys
 import os
+import json
 import asyncio
 import tempfile
 
-# Inject a harmless fake MetaTrader5 so `import mt5_connector` succeeds.
-# (We never call the real connector here — we use FakeMT5Connector below.)
 sys.modules.setdefault("MetaTrader5", type(sys)("MetaTrader5"))
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -25,12 +29,11 @@ from signal_parser import Signal               # noqa: E402
 from trade_manager import TradeManager         # noqa: E402
 
 
-class FakeMT5Connector:
-    """Captures the signal passed to place_limit_order so we can inspect it."""
-
+class FakeMT5:
     def __init__(self):
-        self.connected = True
-        self.captured = None  # the signal handed to place_limit_order
+        self.bid = 4404.0
+        self.ask = 4405.0
+        self.captured = None
 
     def ensure_connected(self):
         return True
@@ -39,26 +42,23 @@ class FakeMT5Connector:
         return {"deals": [], "total_loss_usd": 0.0}
 
     def get_symbol_price(self, symbol="XAUUSD"):
-        return (4000.0, 4000.1)
+        return (self.bid, self.ask)
 
     def place_limit_order(self, signal, lot_size, tp_index=2, max_sl_pips=150):
         self.captured = signal
-        return 99999  # fake successful ticket
+        return 70001
 
 
 def make_settings(tmpdir):
-    import json
     cfg = {
         "telegram": {"api_id": 1, "api_hash": "x", "phone": "x", "session_name": "s"},
         "report_bot": {"bot_token": "x", "authorized_user_ids": []},
         "mt5": {"login": 1, "password": "x", "server": "x",
                 "terminal_path": "", "symbol": "XAUUSD"},
         "channels": [{"id": "@Gulljanali17", "format": "format3"}],
-        "trading": {
-            "lot_size": 0.01, "default_tp_index": 2, "max_sl_pips": 150,
-            "max_daily_sl_pips": 500, "bot_active": True,
-            "settings_password": "x",
-        },
+        "trading": {"lot_size": 0.01, "default_tp_index": 2, "max_sl_pips": 150,
+                    "max_daily_sl_pips": 500, "bot_active": True,
+                    "settings_password": "x"},
     }
     path = os.path.join(tmpdir, "config.json")
     with open(path, "w", encoding="utf-8") as f:
@@ -76,65 +76,68 @@ def _check(failures, label, cond):
 
 def run_scenarios():
     tmpdir = tempfile.mkdtemp(prefix="xausl_")
-    prev_cwd = os.getcwd()
+    prev = os.getcwd()
     os.chdir(tmpdir)
     failures = []
 
     try:
         settings = make_settings(tmpdir)
-        mt5 = FakeMT5Connector()
+        mt5 = FakeMT5()
         tm = TradeManager(settings=settings, mt5=mt5)
         tm._save_trades = lambda *a, **k: None
         tm._save_linked_orders = lambda *a, **k: None
 
-        def run(direction, entry, sl, tps, channel):
+        def run(direction, entry, sl, tps, channel, bid, ask):
+            mt5.bid, mt5.ask = bid, ask
             mt5.captured = None
             sig = Signal(symbol="XAUUSD", direction=direction, entry=entry,
                          stop_loss=sl, take_profits=list(tps), source_channel=channel)
             asyncio.run(tm.process_signal(sig))
             return mt5.captured
 
-        # --- @Gulljanali17, SELL: SL above entry, should drop 10 pips (1.0) ---
-        c = run("SELL", entry=4010.0, sl=4020.0, tps=[4000.0, 3990.0],
-                channel="@Gulljanali17")
-        _check(failures, "@Gulljanali17 SELL: SL 4020 -> 4019",
-               c is not None and c.stop_loss == 4019.0)
-        _check(failures, "@Gulljanali17 SELL: entry unchanged 4010",
-               c is not None and c.entry == 4010.0)
-        _check(failures, "@Gulljanali17 SELL: TPs unchanged",
-               c is not None and c.take_profits == [4000.0, 3990.0])
+        # --- @Gulljanali17 BUY, symmetric 100 pips ---
+        c = run("BUY", entry=4400.0, sl=4390.0, tps=[4410.0, 4420.0],
+                channel="@Gulljanali17", bid=4404.0, ask=4405.0)
+        _check(failures, "BUY entry 4400 -> 4401 (+10)", c and c.entry == 4401.0)
+        _check(failures, "BUY SL 4390 -> 4392 (+20)", c and c.stop_loss == 4392.0)
+        _check(failures, "BUY TPs unchanged", c and c.take_profits == [4410.0, 4420.0])
+        if c:
+            sl_dist = c.entry - c.stop_loss          # 4401 - 4392 = 9.0
+            tp_dist = c.take_profits[0] - c.entry    # 4410 - 4401 = 9.0
+            _check(failures, f"BUY 1:1 -> SL {sl_dist}/TP {tp_dist} ($9/$9)",
+                   abs(sl_dist - tp_dist) < 1e-9 and abs(sl_dist - 9.0) < 1e-9)
 
-        # --- @Gulljanali17, BUY: SL below entry, should rise 10 pips (1.0) ---
-        c = run("BUY", entry=4000.0, sl=3990.0, tps=[4010.0, 4020.0],
-                channel="@Gulljanali17")
-        _check(failures, "@Gulljanali17 BUY: SL 3990 -> 3991",
-               c is not None and c.stop_loss == 3991.0)
-        _check(failures, "@Gulljanali17 BUY: entry unchanged 4000",
-               c is not None and c.entry == 4000.0)
-        _check(failures, "@Gulljanali17 BUY: TPs unchanged",
-               c is not None and c.take_profits == [4010.0, 4020.0])
+        # --- @Gulljanali17 SELL, symmetric 100 pips ---
+        c = run("SELL", entry=4400.0, sl=4410.0, tps=[4390.0, 4380.0],
+                channel="@Gulljanali17", bid=4395.0, ask=4396.0)
+        _check(failures, "SELL entry 4400 -> 4399 (-10)", c and c.entry == 4399.0)
+        _check(failures, "SELL SL 4410 -> 4408 (-20)", c and c.stop_loss == 4408.0)
+        _check(failures, "SELL TPs unchanged", c and c.take_profits == [4390.0, 4380.0])
+        if c:
+            sl_dist = c.stop_loss - c.entry          # 4408 - 4399 = 9.0
+            tp_dist = c.entry - c.take_profits[0]    # 4399 - 4390 = 9.0
+            _check(failures, f"SELL 1:1 -> SL {sl_dist}/TP {tp_dist} ($9/$9)",
+                   abs(sl_dist - tp_dist) < 1e-9 and abs(sl_dist - 9.0) < 1e-9)
 
         # --- @bttesteamin gets the same treatment ---
-        c = run("SELL", entry=4010.0, sl=4020.0, tps=[4000.0, 3990.0],
-                channel="@bttesteamin")
-        _check(failures, "@bttesteamin SELL: SL 4020 -> 4019",
-               c is not None and c.stop_loss == 4019.0)
-        _check(failures, "@bttesteamin SELL: entry unchanged 4010",
-               c is not None and c.entry == 4010.0)
+        c = run("SELL", entry=4400.0, sl=4410.0, tps=[4390.0, 4380.0],
+                channel="@bttesteamin", bid=4395.0, ask=4396.0)
+        _check(failures, "@bttesteamin SELL SL 4410 -> 4408", c and c.stop_loss == 4408.0)
+        _check(failures, "@bttesteamin SELL entry 4400 -> 4399", c and c.entry == 4399.0)
 
-        # --- A channel NOT in the list is left alone ---
-        c = run("SELL", entry=4010.0, sl=4020.0, tps=[4000.0, 3990.0],
-                channel="@forexkhan")
-        _check(failures, "@forexkhan SELL: SL unchanged 4020 (not adjusted)",
-               c is not None and c.stop_loss == 4020.0)
+        # --- other channel: untouched ---
+        c = run("SELL", entry=4400.0, sl=4410.0, tps=[4390.0, 4380.0],
+                channel="@forexkhan", bid=4395.0, ask=4396.0)
+        _check(failures, "@forexkhan SELL entry unchanged 4400", c and c.entry == 4400.0)
+        _check(failures, "@forexkhan SELL SL unchanged 4410", c and c.stop_loss == 4410.0)
 
         return failures
     finally:
-        os.chdir(prev_cwd)
+        os.chdir(prev)
 
 
 if __name__ == "__main__":
-    print("=== SL tightening test (@Gulljanali17 / @bttesteamin) ===")
+    print("=== entry+SL adjustment test (@Gulljanali17 / @bttesteamin) ===")
     failures = run_scenarios()
     print("=" * 40)
     if failures:

@@ -176,36 +176,67 @@ class TradeManager:
                 f"({len(signal.take_profits)}). Using TP{tp_index}."
             )
 
-        # For @Gulljanali17 / @bttesteamin: tighten SL 10 pips closer to entry.
-        # Reduces risk by ~$1 on a 0.01 lot (SL risk ~$10 instead of ~$11).
-        # Entry and TP are NOT touched.
+        # For @Gulljanali17 / @bttesteamin:
+        #   1) Move entry 10 pips closer to market (fills sooner).
+        #   2) Tighten SL 20 pips toward entry.
+        # On a symmetric 100-pip signal the entry move alone makes it $11 SL / $9 TP;
+        # tightening SL 20 pips brings the SL back to $9 -> $9 SL / $9 TP (1:1 RR),
+        # and that 1:1 ratio scales the same way in 248 (lot doubles, pips don't).
+        # SL is only ever tightened here, never widened. TP is not touched.
         if signal.source_channel in ("@Gulljanali17", "@bttesteamin"):
             pip = 0.1  # 1 pip in gold price units (10 pips = 1.0 price)
-            original_sl = signal.stop_loss
 
+            # --- 1) entry: 10 pips closer to market ---
+            prices = self.mt5.get_symbol_price(signal.symbol)
+            if prices:
+                current_bid, current_ask = prices
+                original_entry = signal.entry
+                if signal.direction.upper() == "BUY":
+                    adjusted_entry = round(signal.entry + (10 * pip), 2)
+                    if adjusted_entry < current_ask:
+                        signal.entry = adjusted_entry
+                        self.logger.info(
+                            f"{signal.source_channel}: entry +10 pips: {original_entry} -> {adjusted_entry}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"{signal.source_channel}: entry kept at {original_entry} (would pass market)"
+                        )
+                elif signal.direction.upper() == "SELL":
+                    adjusted_entry = round(signal.entry - (10 * pip), 2)
+                    if adjusted_entry > current_bid:
+                        signal.entry = adjusted_entry
+                        self.logger.info(
+                            f"{signal.source_channel}: entry -10 pips: {original_entry} -> {adjusted_entry}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"{signal.source_channel}: entry kept at {original_entry} (would pass market)"
+                        )
+
+            # --- 2) SL: 20 pips toward (adjusted) entry, tighter ---
+            original_sl = signal.stop_loss
             if signal.direction.upper() == "BUY":
-                # BUY: SL sits below entry -> move it UP 10 pips (toward entry, tighter)
-                adjusted_sl = round(signal.stop_loss + (10 * pip), 2)
+                adjusted_sl = round(signal.stop_loss + (20 * pip), 2)
                 if adjusted_sl < signal.entry:
                     signal.stop_loss = adjusted_sl
                     self.logger.info(
-                        f"{signal.source_channel}: SL tightened +10 pips: {original_sl} -> {adjusted_sl}"
+                        f"{signal.source_channel}: SL +20 pips: {original_sl} -> {adjusted_sl}"
                     )
                 else:
                     self.logger.info(
-                        f"{signal.source_channel}: SL kept at {original_sl} (tightened would pass entry)"
+                        f"{signal.source_channel}: SL kept at {original_sl} (would pass entry)"
                     )
             elif signal.direction.upper() == "SELL":
-                # SELL: SL sits above entry -> move it DOWN 10 pips (toward entry, tighter)
-                adjusted_sl = round(signal.stop_loss - (10 * pip), 2)
+                adjusted_sl = round(signal.stop_loss - (20 * pip), 2)
                 if adjusted_sl > signal.entry:
                     signal.stop_loss = adjusted_sl
                     self.logger.info(
-                        f"{signal.source_channel}: SL tightened -10 pips: {original_sl} -> {adjusted_sl}"
+                        f"{signal.source_channel}: SL -20 pips: {original_sl} -> {adjusted_sl}"
                     )
                 else:
                     self.logger.info(
-                        f"{signal.source_channel}: SL kept at {original_sl} (tightened would pass entry)"
+                        f"{signal.source_channel}: SL kept at {original_sl} (would pass entry)"
                     )
 
         if dual_entry:
@@ -313,11 +344,15 @@ class TradeManager:
                     raw_text=signal.raw_text,
                     source_channel=signal.source_channel,
                 )
+                # BrianTradingForex uses a dual-entry breakeven strategy: the
+                # farther leg goes risk-free once the closer leg hits TP1, so its
+                # (sometimes wide) initial SL is by design. Bypass the global
+                # SL-pip cap here so these signals aren't rejected as "SL too large".
                 ticket = self.mt5.place_limit_order(
                     signal=mod_signal,
                     lot_size=_leg_lot(label),
                     tp_index=1,  # Only 1 TP in the modified signal
-                    max_sl_pips=self.settings.max_sl_pips,
+                    max_sl_pips=10**9,  # effectively no cap (breakeven strategy)
                 )
                 results.append((label, entry_val, tp_val, ticket))
 

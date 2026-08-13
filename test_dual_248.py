@@ -67,6 +67,11 @@ class PlaceMT5:
         return (4062.0, 4062.5)
 
     def place_limit_order(self, signal, lot_size, tp_index=2, max_sl_pips=150):
+        # Mimic the real mt5_connector SL-distance cap so the Brian bypass is testable.
+        sl_pips = abs(signal.entry - signal.stop_loss) / 0.1
+        if sl_pips > max_sl_pips:
+            self.placed.append(None)   # rejected for "SL too large"
+            return -1
         self.placed.append(lot_size)
         t = self._n
         self._n += 1
@@ -193,10 +198,34 @@ def test_closure_isolation(tmpdir):
     return failures
 
 
+def test_brian_wide_sl(tmpdir):
+    print("-- wide SL (660 pips) not rejected --")
+    failures = []
+    settings = make_settings(tmpdir)
+    mt5 = PlaceMT5()
+    tm = TradeManager(settings=settings, mt5=mt5)
+    tm._save_trades = lambda *a, **k: None
+    tm._save_linked_orders = lambda *a, **k: None
+
+    # SELL: entry 4371, SL 4437 -> 660 pips away (the case that used to be rejected)
+    sig = Signal(symbol="XAUUSD", direction="SELL", entry=4371.0, stop_loss=4437.0,
+                 take_profits=[4361.0, 4341.0], source_channel="@BrianTradingForex",
+                 entries=[4371.0, 4374.0])
+    asyncio.run(tm.process_signal(sig))
+
+    placed_lots = [l for l in mt5.placed if l is not None]
+    _check(failures, "both legs placed (not rejected for SL too large)",
+           len(placed_lots) == 2)
+    _check(failures, "farther leg still flat 0.01",
+           len(placed_lots) >= 2 and placed_lots[1] == 0.01)
+    return failures
+
+
 def main():
     all_fail = []
     for runner, name in [(test_placement_lots, "place"),
-                         (test_closure_isolation, "close")]:
+                         (test_closure_isolation, "close"),
+                         (test_brian_wide_sl, "widesl")]:
         tmp = tempfile.mkdtemp(prefix=f"xaudual_{name}_")
         prev = os.getcwd()
         os.chdir(tmp)
