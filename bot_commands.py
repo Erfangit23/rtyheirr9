@@ -44,47 +44,20 @@ class CommandHandler:
                     if choice < 1 or choice > len(channels):
                         return f"❌ Invalid number. Choose 1-{len(channels)}."
                     selected = channels[choice - 1]
-                    self._backtest_state[user_id] = {
-                        "channel": selected["id"],
-                        "format": selected.get("format", "auto"),
-                    }
+                    self._backtest_state.pop(user_id)
+                    # Run in the background so the bot stays responsive; the
+                    # results are pushed via the report callback when ready.
+                    asyncio.create_task(
+                        self._run_backtest_task(selected["id"], selected.get("format", "auto"))
+                    )
                     return (
-                        f"Selected: {selected['id']}\n\n"
-                        f"Enter TP index to backtest (1-10, default 2):\n"
-                        f"Or send 'default' for TP2."
+                        f"⏳ Backtest started: {selected['id']}\n"
+                        f"Scanning up to the last 500 signals (walking back as far as needed).\n"
+                        f"This can take a few minutes — results will arrive as a message."
                     )
                 except ValueError:
                     self._backtest_state.pop(user_id)
                     return "❌ Invalid input. Backtest cancelled."
-
-            elif isinstance(state, dict) and "channel" in state and "tp" not in state:
-                if text.strip().lower() == "default":
-                    tp_index = 2
-                else:
-                    try:
-                        tp_index = int(text.strip())
-                        if tp_index < 1 or tp_index > 10:
-                            return "❌ TP index must be 1-10. Try again:"
-                    except ValueError:
-                        self._backtest_state.pop(user_id)
-                        return "❌ Invalid input. Backtest cancelled."
-
-                # Run the backtest
-                channel_id = state["channel"]
-                fmt = state["format"]
-                self._backtest_state.pop(user_id)
-
-                self.logger.info(
-                    f"Starting backtest: {channel_id} TP{tp_index} for user {user_id}"
-                )
-                try:
-                    result_text = await self.run_backtest_async(
-                        channel_id, fmt, tp_index, user_id
-                    )
-                    return result_text
-                except Exception as e:
-                    self.logger.error(f"Backtest error: {e}", exc_info=True)
-                    return f"❌ Backtest failed: {e}"
 
         # --- Commands that don't need password ---
         if text.lower() == "/start":
@@ -455,7 +428,12 @@ class CommandHandler:
         if not channels:
             return "No channels configured."
 
-        lines = ["📊 Backtest\n\nSelect a channel:\n\n"]
+        lines = [
+            "📊 Backtest — replays up to the last 500 signals against M1 price data\n",
+            "Uses each channel's live trading rules (TP, entry/SL adjustments).\n"
+            "Reports winrate + estimated profit @ 0.01 lot (normal mode, no 248).\n\n"
+            "Select a channel:\n\n",
+        ]
         for i, ch in enumerate(channels, 1):
             lines.append(f"{i}. {ch['id']} ({ch.get('format', 'auto')})\n")
 
@@ -463,22 +441,25 @@ class CommandHandler:
         self._backtest_state[user_id] = "selecting_channel"
         return "".join(lines)
 
-    async def run_backtest_async(self, channel_id: str, fmt: str, tp_index: int, user_id: int):
-        """Run backtest and return formatted results."""
-        from backtest import Backtester
+    async def _run_backtest_task(self, channel_id: str, fmt: str):
+        """Background backtest; pushes results through the report bot."""
+        try:
+            from backtest import Backtester
 
-        backtester = Backtester(
-            user_client=self.tg_user_client,
-            mt5_connector=self.mt5,
-            logger=self.logger,
-        )
+            backtester = Backtester(
+                user_client=self.tg_user_client,
+                mt5_connector=self.mt5,
+                logger=self.logger,
+            )
+            self.logger.info(f"Backtest started: {channel_id} (up to 500 signals)")
+            result = await backtester.run_backtest(channel_id=channel_id, fmt=fmt)
+            text = backtester.format_results(result)
+        except Exception as e:
+            self.logger.error(f"Backtest task error: {e}", exc_info=True)
+            text = f"❌ Backtest failed for {channel_id}: {e}"
 
-        self.logger.info(f"Starting backtest for {channel_id}, TP{tp_index}, last 100 signals")
-        result = await backtester.run_backtest(
-            channel_id=channel_id,
-            fmt=fmt,
-            limit=100,
-            tp_index=tp_index,
-        )
-
-        return backtester.format_results(result, channel_id)
+        if self.trade_manager and self.trade_manager.report_callback:
+            try:
+                await self.trade_manager.report_callback(text)
+            except Exception as e:
+                self.logger.error(f"Backtest result send error: {e}")

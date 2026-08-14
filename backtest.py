@@ -1,21 +1,34 @@
 """
-Backtest module — fetches historical signals from a channel and checks
-against MT5 historical price data to determine TP/SL outcomes.
+Backtest module v2 — replays a channel's historical signals against MT5 M1 data.
 
-Improvements:
-- Scans up to 3000 messages to find more signals
-- Entry window: 3 hours (180 min) — more realistic for limit orders
-- After entry filled, check up to 12 hours for TP/SL
-- Calculates risk-reward (RR) ratio for each trade
-- Better "not filled" detection — checks if price came close to entry
-- Detailed per-signal report with RR, entry, TP, SL
+Fixes over v1:
+- No text pre-filter (v1 dropped "GOLD Buy Limit"-style signals entirely).
+- Walks back through channel history as far as needed to collect up to 500
+  signals (v1 capped at 3000 messages).
+- Broker-server time offset auto-detected from a live tick — v1 used the VPS
+  machine timezone, so time windows (and therefore results) were wrong whenever
+  the VPS clock differed from the broker's server time.
+- Signals that filled but never hit TP/SL within the window are reported as
+  "expired" (v1 misclassified them as "not filled").
+- Applies the same per-channel rules as live trading:
+    * per-channel TP index (gold_alicxzos110 TP4, GoldVisionofficial TP3,
+      forexkhan TP1, Signal_Atlas TP2, Eliz TP1, others TP2)
+    * @Gulljanali17 / @bttesteamin: entry +10 pips toward market, SL +20 pips
+    * @BrianTradingForex: dual entry, TP adjustments, TP2 150-pip cap and
+      breakeven on the farther leg after TP1
+- Estimated USD profit is for NORMAL mode at the base lot (0.01) — 248 is
+  intentionally NOT simulated.
+
+The MT5 outcome checks are synchronous; run_backtest yields to the event loop
+between signals so the bot stays responsive while a backtest runs.
 """
 
-import logging
 import asyncio
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+import logging
+import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from typing import Optional
 
 from signal_parser import parse_signal, Signal
 
@@ -26,393 +39,473 @@ except ImportError:
 
 
 @dataclass
+class TradeOutcome:
+    direction: str
+    entry: float
+    tp: float
+    sl: float
+    status: str            # tp_hit / sl_hit / not_filled / cancelled / expired / no_data
+    profit_pips: float = 0.0
+    rr: float = 0.0
+    risk_pips: float = 0.0
+    reward_pips: float = 0.0
+    entry_time: str = ""
+    close_time: str = ""
+    signal_time: str = ""
+    leg: str = ""          # "1"/"2" for Brian dual-entry legs
+
+
+@dataclass
 class BacktestResult:
-    total_signals: int = 0
-    parsed: int = 0
-    entry_hit: int = 0
+    channel: str = ""
+    messages_scanned: int = 0
+    signals: int = 0
+    trades: int = 0
     tp_hit: int = 0
     sl_hit: int = 0
-    no_entry: int = 0
-    errors: int = 0
+    expired: int = 0
+    not_filled: int = 0
+    cancelled: int = 0
+    no_data: int = 0
     winrate: float = 0.0
     avg_rr: float = 0.0
-    total_profit_pips: float = 0.0
-    total_loss_pips: float = 0.0
+    gross_profit_pips: float = 0.0
+    gross_loss_pips: float = 0.0
     net_pips: float = 0.0
+    est_profit_usd: float = 0.0
+    first_signal: str = ""
+    last_signal: str = ""
+    tp_note: str = ""
     results: list = field(default_factory=list)
 
 
 class Backtester:
-    """Backtests historical signals against MT5 price data."""
+    """Backtests historical signals against MT5 M1 price data."""
 
-    # Entry must be filled within this many minutes of signal
-    ENTRY_WINDOW_MINUTES = 180  # 3 hours
+    TARGET_SIGNALS = 500          # how many signals to collect per run
+    MAX_MESSAGES = 50000          # hard cap on messages scanned while walking back
+    ENTRY_WINDOW_MIN = 180        # entry must fill within this many minutes
+    TP_SL_WINDOW_HOURS = 24       # after fill, wait this long for TP/SL
+    PIP = 0.1                     # 1 pip on XAUUSD in price units
+    USD_PER_PIP = 0.10            # $ per pip per 0.01 lot on XAUUSD
 
-    # After entry, check this many hours for TP/SL
-    TP_SL_WINDOW_HOURS = 12
-
-    def __init__(
-        self,
-        user_client,
-        mt5_connector,
-        logger: Optional[logging.Logger] = None,
-    ):
+    def __init__(self, user_client, mt5_connector, logger: Optional[logging.Logger] = None):
         self.user_client = user_client
         self.mt5 = mt5_connector
         self.logger = logger or logging.getLogger("xau_trader")
 
-    async def fetch_channel_messages(
-        self,
-        channel_id: str,
-        limit: int = 3000,
-        target_signals: int = 500,
-    ) -> list:
-        """Fetch messages from a channel until we have target_signals parsed signals.
+    # ------------------------------------------------------------------
+    # Signal collection
+    # ------------------------------------------------------------------
+    async def fetch_signals(self, channel_id: str, target: int, fmt: str = "auto"):
+        """Collect the most recent `target` parseable signals, walking back
+        through channel history as far as needed (bounded by MAX_MESSAGES).
 
-        Fetches up to 'limit' messages but stops early once target_signals
-        are collected.
+        Returns (signals_chronological, messages_scanned).
         """
-        try:
-            entity = await self.user_client.get_entity(channel_id)
-            messages = []
-            signals_found = 0
-
-            async for msg in self.user_client.iter_messages(entity, limit=limit):
-                if msg.text:
-                    # Quick pre-filter: must contain XAUUSD or XAU
-                    text_upper = msg.text.upper()
-                    if "XAUUSD" not in text_upper and "XAU" not in text_upper:
-                        continue
-
-                    messages.append({
-                        "id": msg.id,
-                        "text": msg.text,
-                        "date": msg.date,  # UTC datetime
-                    })
-
-                    # Check if this is actually a parseable signal
-                    from signal_parser import parse_signal as _ps
-                    if _ps(msg.text, channel_id, "auto"):
-                        signals_found += 1
-                        if signals_found >= target_signals:
-                            break
-
-            self.logger.info(
-                f"Fetched {len(messages)} messages from {channel_id}, "
-                f"{signals_found} signals found"
-            )
-            return messages
-        except Exception as e:
-            self.logger.error(f"Failed to fetch messages from {channel_id}: {e}")
-            return []
-
-    def _utc_to_local(self, utc_dt: datetime) -> datetime:
-        """Convert UTC datetime to local time (for MT5 calls)."""
-        if utc_dt.tzinfo is None:
-            utc_dt = utc_dt.replace(tzinfo=timezone.utc)
-        local_dt = utc_dt.astimezone().replace(tzinfo=None)
-        return local_dt
-
-    def _calculate_rr(self, entry: float, tp: float, sl: float) -> float:
-        """Calculate risk-reward ratio."""
-        risk = abs(entry - sl)
-        reward = abs(tp - entry)
-        if risk == 0:
-            return 0.0
-        return reward / risk
-
-    def _pips_between(self, price1: float, price2: float) -> float:
-        """Calculate pips between two prices (gold: 1 pip = 0.1)."""
-        return abs(price1 - price2) / 0.1
-
-    def check_signal_outcome(
-        self,
-        signal: Signal,
-        msg_date_utc: datetime,
-        tp_index: int = 2,
-    ) -> dict:
-        """
-        Check what happened with a signal using MT5 historical data.
-
-        - Entry must be filled within ENTRY_WINDOW_MINUTES of signal time.
-        - After entry, check up to TP_SL_WINDOW_HOURS for TP/SL.
-        - Uses M1 (1-minute) bars for precise entry/exit detection.
-
-        Returns dict with status and details.
-        """
-        if not self.mt5.ensure_connected():
-            return {"status": "error", "message": "MT5 not connected"}
-
-        symbol = signal.symbol
-        direction = signal.direction.upper()
-
-        # Get TP at specified index
-        if tp_index > len(signal.take_profits):
-            tp_index = len(signal.take_profits)
-        tp_price = signal.take_profits[tp_index - 1]
-        sl_price = signal.stop_loss
-        entry_price = signal.entry
-
-        # Calculate RR
-        rr = self._calculate_rr(entry_price, tp_price, sl_price)
-
-        # Risk and reward in pips
-        risk_pips = self._pips_between(entry_price, sl_price)
-        reward_pips = self._pips_between(entry_price, tp_price)
-
-        # Convert signal time from UTC to local (broker) time
-        signal_local = self._utc_to_local(msg_date_utc)
-
-        # Entry window
-        entry_window_end = signal_local + timedelta(minutes=self.ENTRY_WINDOW_MINUTES)
-
-        # Full window for data fetch
-        full_window_end = signal_local + timedelta(hours=self.TP_SL_WINDOW_HOURS + 1)
-
-        # Fetch M1 data covering the full window
-        rates = mt5.copy_rates_range(
-            symbol,
-            mt5.TIMEFRAME_M1,
-            signal_local - timedelta(minutes=5),
-            full_window_end + timedelta(minutes=5),
-        )
-
-        if rates is None or len(rates) == 0:
-            # Fallback: copy_rates_from with count
-            count = (self.TP_SL_WINDOW_HOURS + 2) * 60
-            rates = mt5.copy_rates_from(
-                symbol, mt5.TIMEFRAME_M1,
-                signal_local - timedelta(minutes=5),
-                count,
-            )
-            if rates is None or len(rates) == 0:
-                self.logger.error(f"No historical data for {symbol} at {signal_local}")
-                return {"status": "error", "message": "No historical data"}
-
-        self.logger.info(
-            f"Backtest: {direction} {symbol} entry={entry_price} "
-            f"signal_local={signal_local.strftime('%Y-%m-%d %H:%M')} "
-            f"rates={len(rates)} bars | RR=1:{rr:.2f} "
-            f"risk={risk_pips:.0f}pips reward={reward_pips:.0f}pips"
-        )
-
-        entry_filled = False
-        entry_filled_time = None
-        result_status = "no_entry"
-        close_time = None
-        min_distance_to_entry = float('inf')  # Track how close price came
-
-        for i, bar in enumerate(rates):
-            bar_time = datetime.fromtimestamp(bar["time"])
-
-            # Skip bars before signal time
-            if bar_time < signal_local:
+        entity = await self.user_client.get_entity(channel_id)
+        signals = []
+        scanned = 0
+        async for msg in self.user_client.iter_messages(entity, limit=self.MAX_MESSAGES):
+            scanned += 1
+            text = (msg.text or "").strip()
+            if len(text) < 5:
                 continue
-
-            bar_high = bar["high"]
-            bar_low = bar["low"]
-            bar_open = bar["open"]
-            bar_close = bar["close"]
-
-            if not entry_filled:
-                # Only check entry within window
-                if bar_time > entry_window_end:
-                    # Entry window expired — record how close we got
-                    result_status = "no_entry"
+            # No pre-filter here: try the channel's format first, then auto —
+            # v1's "must contain XAUUSD/XAU" filter silently dropped channels
+            # that write "GOLD Buy Limit ...".
+            sig = parse_signal(text, channel_id, fmt) or parse_signal(text, channel_id, "auto")
+            if sig:
+                signals.append({"signal": sig, "date": msg.date})
+                if len(signals) >= target:
                     break
 
-                # Track closest distance to entry
-                if direction == "SELL":
-                    # SELL LIMIT: price must rise to entry
-                    distance = bar_high - entry_price
-                    if distance >= 0:
-                        entry_filled = True
-                        entry_filled_time = bar_time
-                    else:
-                        # Price didn't reach entry; track how close
-                        min_distance_to_entry = min(min_distance_to_entry, abs(distance))
-                elif direction == "BUY":
-                    # BUY LIMIT: price must fall to entry
-                    distance = entry_price - bar_low
-                    if distance >= 0:
-                        entry_filled = True
-                        entry_filled_time = bar_time
-                    else:
-                        min_distance_to_entry = min(min_distance_to_entry, abs(distance))
+        signals.reverse()  # iter_messages is newest-first -> chronological
+        self.logger.info(
+            f"Backtest fetch {channel_id}: scanned {scanned} messages, "
+            f"found {len(signals)} signals"
+        )
+        return signals, scanned
+
+    # ------------------------------------------------------------------
+    # MT5 time handling
+    # ------------------------------------------------------------------
+    def _server_offset(self, symbol: str) -> float:
+        """Offset (seconds) between broker server time and UTC.
+
+        tick.time is the broker's wall clock expressed as an epoch, so
+        offset = tick.time - real epoch. Adding it to a UTC timestamp converts
+        it into the broker's time domain, which is what MT5 history calls and
+        bar["time"] values use. Falls back to 0 if unavailable.
+        """
+        try:
+            tick = mt5.symbol_info_tick(symbol)
+            if tick and tick.time:
+                return tick.time - time.time()
+        except Exception as e:
+            self.logger.warning(f"Server offset detection failed: {e}")
+        return 0.0
+
+    def _get_rates(self, symbol: str, start_epoch: float, end_epoch: float):
+        """Fetch M1 bars for [start_epoch, end_epoch] (broker-time epochs)."""
+        if not self.mt5.ensure_connected():
+            return None
+        frm = datetime.fromtimestamp(start_epoch, tz=timezone.utc)
+        to = datetime.fromtimestamp(end_epoch, tz=timezone.utc)
+        rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M1, frm, to)
+        if rates is None or len(rates) == 0:
+            count = int((end_epoch - start_epoch) / 60) + 10
+            rates = mt5.copy_rates_from(symbol, mt5.TIMEFRAME_M1, frm, count)
+        return rates if rates is not None and len(rates) > 0 else None
+
+    @staticmethod
+    def _fmt_time(epoch: float) -> str:
+        return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%m-%d %H:%M")
+
+    # ------------------------------------------------------------------
+    # Channel rules (mirror live trading)
+    # ------------------------------------------------------------------
+    TP_RULES = {
+        "@gold_alicxzos110": 4,
+        "@GoldVisionofficial": 3,
+        "@forexkhan": 1,
+        "@khanbours": 1,
+        "@khanbourse": 1,
+        "@Signal_Atlas": 2,
+        "@Eliz_fxac_ademy1": 1,
+    }
+
+    def _channel_tp_index(self, channel: str, n_tps: int) -> int:
+        idx = self.TP_RULES.get(channel, 2)  # default TP2 like live default
+        return max(1, min(idx, n_tps))
+
+    def _apply_channel_adjustments(self, sig: Signal, rates, signal_epoch: float):
+        """@Gulljanali17 / @bttesteamin: entry +10 pips toward market (market
+        approximated by the first bar close at/after the signal), SL +20 pips
+        toward the entry — same math as live process_signal."""
+        if sig.source_channel not in ("@Gulljanali17", "@bttesteamin"):
+            return
+        market = None
+        for bar in rates:
+            if bar["time"] >= signal_epoch:
+                market = bar["close"]
+                break
+        pip = self.PIP
+        if market is not None:
+            if sig.direction.upper() == "BUY":
+                adj = round(sig.entry + 10 * pip, 2)
+                if adj < market:
+                    sig.entry = adj
             else:
-                # Entry was filled, check TP and SL
-                # Check both in same bar — use conservative approach:
-                # If both TP and SL could have been hit in same bar,
-                # assume SL first (worst case)
+                adj = round(sig.entry - 10 * pip, 2)
+                if adj > market:
+                    sig.entry = adj
+        if sig.direction.upper() == "BUY":
+            adj = round(sig.stop_loss + 20 * pip, 2)
+            if adj < sig.entry:
+                sig.stop_loss = adj
+        else:
+            adj = round(sig.stop_loss - 20 * pip, 2)
+            if adj > sig.entry:
+                sig.stop_loss = adj
+
+    def _prep_brian_legs(self, sig: Signal):
+        """Build the two Brian legs exactly like live process_signal."""
+        e1, e2 = sig.entries[0], sig.entries[1]
+        tps = sig.take_profits
+        adj = 1.0  # 10 pips
+        if sig.direction.upper() == "BUY":
+            tp1 = tps[0] - adj
+            cap = e2 + (150 * self.PIP) - adj
+            tp2 = min(tps[1], cap) if len(tps) >= 2 else cap
+            closer, farther = (e1, e2) if e1 >= e2 else (e2, e1)
+        else:
+            tp1 = tps[0] + adj
+            cap = e2 - (150 * self.PIP) + adj
+            tp2 = max(tps[1], cap) if len(tps) >= 2 else cap
+            closer, farther = (e1, e2) if e1 <= e2 else (e2, e1)
+        return (closer, tp1), (farther, tp2)
+
+    # ------------------------------------------------------------------
+    # Simulation
+    # ------------------------------------------------------------------
+    def _simulate_single(self, direction, entry, tp, sl, rates, signal_epoch) -> TradeOutcome:
+        entry_window = self.ENTRY_WINDOW_MIN * 60
+        tp_window = self.TP_SL_WINDOW_HOURS * 3600
+        risk = abs(entry - sl) / self.PIP
+        reward = abs(tp - entry) / self.PIP
+        out = TradeOutcome(
+            direction=direction, entry=entry, tp=tp, sl=sl,
+            status="not_filled", risk_pips=risk, reward_pips=reward,
+            rr=(reward / risk) if risk else 0.0,
+        )
+        filled_epoch = None
+        for bar in rates:
+            t = bar["time"]
+            if t < signal_epoch:
+                continue
+            if filled_epoch is None:
+                if t > signal_epoch + entry_window:
+                    break
                 if direction == "SELL":
-                    if bar_high >= sl_price:
-                        result_status = "sl_hit"
-                        close_time = bar_time
-                        break
-                    if bar_low <= tp_price:
-                        result_status = "tp_hit"
-                        close_time = bar_time
-                        break
-                elif direction == "BUY":
-                    if bar_low <= sl_price:
-                        result_status = "sl_hit"
-                        close_time = bar_time
-                        break
-                    if bar_high >= tp_price:
-                        result_status = "tp_hit"
-                        close_time = bar_time
-                        break
+                    if bar["high"] >= entry:
+                        filled_epoch = t
+                elif bar["low"] <= entry:
+                    filled_epoch = t
+                if filled_epoch is None:
+                    continue
+                out.entry_time = self._fmt_time(filled_epoch)
+            # From the fill bar onward; SL checked first (conservative)
+            if t > filled_epoch + tp_window:
+                out.status = "expired"
+                out.close_time = self._fmt_time(t)
+                return out
+            if direction == "SELL":
+                if bar["high"] >= sl:
+                    out.status, out.profit_pips = "sl_hit", -risk
+                    out.close_time = self._fmt_time(t)
+                    return out
+                if bar["low"] <= tp:
+                    out.status, out.profit_pips = "tp_hit", reward
+                    out.close_time = self._fmt_time(t)
+                    return out
+            else:
+                if bar["low"] <= sl:
+                    out.status, out.profit_pips = "sl_hit", -risk
+                    out.close_time = self._fmt_time(t)
+                    return out
+                if bar["high"] >= tp:
+                    out.status, out.profit_pips = "tp_hit", reward
+                    out.close_time = self._fmt_time(t)
+                    return out
+        if filled_epoch is not None:
+            out.status = "expired"
+        return out
 
-        # Calculate pips for result
-        profit_pips = 0.0
-        if result_status == "tp_hit":
-            profit_pips = reward_pips
-        elif result_status == "sl_hit":
-            profit_pips = -risk_pips
+    def _simulate_brian(self, sig, rates, signal_epoch) -> list:
+        """Dual-entry simulation: closer leg -> TP1, farther leg -> TP2 with
+        breakeven after the closer leg hits TP1. If TP1 is reached before the
+        closer leg fills, both are cancelled (live behavior)."""
+        direction = sig.direction.upper()
+        (e1, tp1), (e2, tp2) = self._prep_brian_legs(sig)
+        sl_orig = sig.stop_loss
+        entry_window = self.ENTRY_WINDOW_MIN * 60
+        tp_window = self.TP_SL_WINDOW_HOURS * 3600
 
-        # Convert closest distance to pips for no_entry
-        closest_pips = 0.0
-        if result_status == "no_entry" and min_distance_to_entry != float('inf'):
-            closest_pips = min_distance_to_entry / 0.1
-
-        return {
-            "status": result_status,
-            "direction": direction,
-            "entry": entry_price,
-            "tp": tp_price,
-            "sl": sl_price,
-            "tp_index": tp_index,
-            "rr": rr,
-            "risk_pips": risk_pips,
-            "reward_pips": reward_pips,
-            "profit_pips": profit_pips,
-            "entry_filled": entry_filled,
-            "entry_time": entry_filled_time.strftime("%Y-%m-%d %H:%M") if entry_filled_time else None,
-            "close_time": close_time.strftime("%Y-%m-%d %H:%M") if close_time else None,
-            "signal_time": signal_local.strftime("%Y-%m-%d %H:%M"),
-            "source": signal.source_channel,
-            "closest_pips": closest_pips,  # How close price came to entry (for no_entry)
-        }
-
-    async def run_backtest(
-        self,
-        channel_id: str,
-        fmt: str = "auto",
-        limit: int = 3000,
-        target_signals: int = 500,
-        tp_index: int = 2,
-    ) -> BacktestResult:
-        """Run full backtest on a channel."""
-        result = BacktestResult()
-
-        # Fetch messages
-        messages = await self.fetch_channel_messages(channel_id, limit, target_signals)
-        result.total_signals = len(messages)
-
-        # Parse and test each message
-        for idx, msg in enumerate(messages):
-            text = msg["text"]
-            msg_date = msg["date"]
-
-            # Parse signal — try specified format first, then auto
-            signal = parse_signal(text, channel_id, fmt)
-            if not signal:
-                signal = parse_signal(text, channel_id, "auto")
-
-            if not signal:
-                continue
-
-            result.parsed += 1
-
-            # Determine TP index for specific channels
-            use_tp_index = tp_index
-            if channel_id == "@gold_alicxzos110":
-                use_tp_index = 4
-            elif channel_id == "@forexkhan":
-                use_tp_index = 1
-            elif channel_id == "@Signal_Atlas":
-                use_tp_index = 2
-
-            # Check outcome
-            try:
-                outcome = self.check_signal_outcome(signal, msg_date, use_tp_index)
-            except Exception as e:
-                self.logger.error(f"Backtest error on signal {idx}: {e}")
-                result.errors += 1
-                continue
-
-            if outcome["status"] == "error":
-                result.errors += 1
-                continue
-
-            if outcome["status"] == "no_entry":
-                result.no_entry += 1
-            elif outcome["status"] == "tp_hit":
-                result.entry_hit += 1
-                result.tp_hit += 1
-                result.total_profit_pips += outcome["profit_pips"]
-            elif outcome["status"] == "sl_hit":
-                result.entry_hit += 1
-                result.sl_hit += 1
-                result.total_loss_pips += abs(outcome["profit_pips"])
-
-            result.results.append(outcome)
-
-        # Calculate winrate (only closed trades: tp + sl)
-        closed = result.tp_hit + result.sl_hit
-        if closed > 0:
-            result.winrate = (result.tp_hit / closed) * 100
-
-        # Calculate net pips
-        result.net_pips = result.total_profit_pips - result.total_loss_pips
-
-        # Calculate average RR
-        rr_values = [r["rr"] for r in result.results if r.get("rr", 0) > 0]
-        if rr_values:
-            result.avg_rr = sum(rr_values) / len(rr_values)
-
-        return result
-
-    def format_results(self, result: BacktestResult, channel_id: str) -> str:
-        """Format backtest results for Telegram message."""
-        lines = [
-            f"📊 Backtest Results: {channel_id}\n",
-            f"Messages scanned: {result.total_signals}",
-            f"Signals parsed: {result.parsed}",
-            f"Entry filled: {result.entry_hit}",
-            f"  ✅ TP hit: {result.tp_hit}",
-            f"  ❌ SL hit: {result.sl_hit}",
-            f"⚪ Entry not filled: {result.no_entry}",
-            f"⚠️ Errors: {result.errors}",
-            f"",
-            f"🎯 Winrate: {result.winrate:.1f}% ({result.tp_hit}W / {result.sl_hit}L)",
-            f"📊 Avg RR: 1:{result.avg_rr:.2f}",
-            f"💰 Net pips: {result.net_pips:+.0f} pips",
-            f"   Profit: +{result.total_profit_pips:.0f} | Loss: -{result.total_loss_pips:.0f}",
-            f"Closed trades: {result.tp_hit + result.sl_hit}",
+        legs = [
+            {"e": e1, "tp": tp1, "sl": sl_orig, "fill": None, "closed": False,
+             "status": "not_filled", "close": None, "tag": "1"},
+            {"e": e2, "tp": tp2, "sl": sl_orig, "fill": None, "closed": False,
+             "status": "not_filled", "close": None, "tag": "2"},
         ]
 
-        # Show last 15 detailed results
-        if result.results:
-            lines.append("\n--- Last 15 signals ---")
-            recent = result.results[-15:]
-            for r in recent:
-                if r["status"] == "no_entry":
-                    status_icon = "⚪"
-                    detail = f"Not filled (closest: {r.get('closest_pips', 0):.0f} pips away)"
-                elif r["status"] == "tp_hit":
-                    status_icon = "✅"
-                    detail = f"TP hit +{r['reward_pips']:.0f} pips at {r['close_time']}"
-                elif r["status"] == "sl_hit":
-                    status_icon = "❌"
-                    detail = f"SL hit -{r['risk_pips']:.0f} pips at {r['close_time']}"
-                else:
-                    status_icon = "❓"
-                    detail = r["status"]
+        for bar in rates:
+            t = bar["time"]
+            if t < signal_epoch:
+                continue
+            hi, lo = bar["high"], bar["low"]
 
+            # Cancel rule: price reached TP1 while the closer leg never filled
+            if legs[0]["fill"] is None:
+                if t > signal_epoch + entry_window:
+                    break
+                if (direction == "SELL" and lo <= tp1) or (direction == "BUY" and hi >= tp1):
+                    legs[0]["status"] = legs[1]["status"] = "cancelled"
+                    legs[0]["closed"] = legs[1]["closed"] = True
+                    legs[0]["close"] = legs[1]["close"] = t
+                    break
+
+            # Fills (limit orders)
+            for L in legs:
+                if L["fill"] is None and (
+                    (direction == "SELL" and hi >= L["e"]) or
+                    (direction == "BUY" and lo <= L["e"])
+                ):
+                    L["fill"] = t
+
+            # Closes (SL first — conservative)
+            for L in legs:
+                if L["fill"] is not None and not L["closed"]:
+                    if t > L["fill"] + tp_window:
+                        L["status"], L["closed"], L["close"] = "expired", True, t
+                        continue
+                    if direction == "SELL":
+                        if hi >= L["sl"]:
+                            L["status"], L["closed"], L["close"] = "sl_hit", True, t
+                        elif lo <= L["tp"]:
+                            L["status"], L["closed"], L["close"] = "tp_hit", True, t
+                    else:
+                        if lo <= L["sl"]:
+                            L["status"], L["closed"], L["close"] = "sl_hit", True, t
+                        elif hi >= L["tp"]:
+                            L["status"], L["closed"], L["close"] = "tp_hit", True, t
+
+            # Breakeven: closer leg hit TP1 -> farther leg SL to its entry
+            if legs[0]["status"] == "tp_hit" and abs(legs[1]["sl"] - e2) > 1e-9:
+                if not legs[1]["closed"]:
+                    legs[1]["sl"] = e2
+
+            if all(L["closed"] for L in legs):
+                break
+
+        results = []
+        for L in legs:
+            risk = abs(L["e"] - L["sl"]) / self.PIP if L["fill"] is not None else abs(L["e"] - sl_orig) / self.PIP
+            reward = abs(L["tp"] - L["e"]) / self.PIP
+            profit = 0.0
+            if L["status"] == "tp_hit":
+                profit = reward
+            elif L["status"] == "sl_hit":
+                profit = -(abs(L["e"] - L["sl"]) / self.PIP)
+            results.append(TradeOutcome(
+                direction=direction, entry=L["e"], tp=L["tp"], sl=L["sl"],
+                status=L["status"], profit_pips=profit,
+                risk_pips=risk, reward_pips=reward,
+                rr=(reward / risk) if risk else 0.0,
+                entry_time=self._fmt_time(L["fill"]) if L["fill"] else "",
+                close_time=self._fmt_time(L["close"]) if L["close"] else "",
+                leg=L["tag"],
+            ))
+        return results
+
+    # ------------------------------------------------------------------
+    # Orchestration
+    # ------------------------------------------------------------------
+    async def run_backtest(self, channel_id: str, fmt: str = "auto",
+                           target_signals: Optional[int] = None) -> BacktestResult:
+        target = target_signals or self.TARGET_SIGNALS
+        result = BacktestResult(channel=channel_id, tp_note=self._tp_note(channel_id))
+
+        signals, scanned = await self.fetch_signals(channel_id, target, fmt)
+        result.messages_scanned = scanned
+        result.signals = len(signals)
+        if not signals:
+            return result
+
+        result.first_signal = signals[0]["date"].strftime("%Y-%m-%d")
+        result.last_signal = signals[-1]["date"].strftime("%Y-%m-%d")
+
+        offset = self._server_offset(signals[0]["signal"].symbol)
+        if offset:
+            self.logger.info(f"Backtest: broker server offset {offset/3600:+.1f}h from UTC")
+
+        for item in signals:
+            await asyncio.sleep(0)  # keep the bot responsive between signals
+            sig = item["signal"]
+            signal_epoch = item["date"].timestamp() + offset
+            out_tp = self._channel_tp_index(sig.source_channel, len(sig.take_profits))
+
+            end_epoch = signal_epoch + (self.ENTRY_WINDOW_MIN * 60 + self.TP_SL_WINDOW_HOURS * 3600) + 300
+            rates = self._get_rates(sig.symbol, signal_epoch - 300, end_epoch)
+
+            stamp = item["date"].strftime("%m-%d %H:%M")
+            if rates is None:
+                result.no_data += 1
+                result.trades += 1
+                result.results.append(TradeOutcome(
+                    direction=sig.direction, entry=sig.entry, tp=0.0,
+                    sl=sig.stop_loss, status="no_data", signal_time=stamp))
+                continue
+
+            self._apply_channel_adjustments(sig, rates, signal_epoch)
+
+            is_brian = (sig.source_channel == "@BrianTradingForex"
+                        and len(getattr(sig, "entries", []) or []) >= 2
+                        and len(sig.take_profits) >= 2)
+            if is_brian:
+                outcomes = self._simulate_brian(sig, rates, signal_epoch)
+            else:
+                outcomes = [self._simulate_single(
+                    sig.direction.upper(), sig.entry,
+                    sig.take_profits[out_tp - 1], sig.stop_loss,
+                    rates, signal_epoch)]
+
+            for o in outcomes:
+                o.signal_time = stamp
+                result.results.append(o)
+                result.trades += 1
+                if o.status == "tp_hit":
+                    result.tp_hit += 1
+                    result.gross_profit_pips += o.profit_pips
+                elif o.status == "sl_hit":
+                    result.sl_hit += 1
+                    result.gross_loss_pips += abs(o.profit_pips)
+                elif o.status == "expired":
+                    result.expired += 1
+                elif o.status == "not_filled":
+                    result.not_filled += 1
+                elif o.status == "cancelled":
+                    result.cancelled += 1
+
+        closed = result.tp_hit + result.sl_hit
+        if closed:
+            result.winrate = result.tp_hit / closed * 100
+        result.net_pips = result.gross_profit_pips - result.gross_loss_pips
+        result.est_profit_usd = result.net_pips * self.USD_PER_PIP
+        rr_list = [o.rr for o in result.results if o.rr > 0]
+        if rr_list:
+            result.avg_rr = sum(rr_list) / len(rr_list)
+        return result
+
+    def _tp_note(self, channel_id: str) -> str:
+        if channel_id == "@BrianTradingForex":
+            return "dual entry: closer->TP1(-10p), farther->TP2(cap 150p, breakeven)"
+        if channel_id in ("@Gulljanali17", "@bttesteamin"):
+            return f"TP2, entry +10p, SL +20p (live rules)"
+        return f"TP{self.TP_RULES.get(channel_id, 2)} (live rules)"
+
+    # ------------------------------------------------------------------
+    # Reporting
+    # ------------------------------------------------------------------
+    def format_results(self, result: BacktestResult) -> str:
+        filled = result.tp_hit + result.sl_hit + result.expired
+        fill_rate = (filled / result.trades * 100) if result.trades else 0
+        sign = "+" if result.est_profit_usd >= 0 else ""
+        win_sign = "+" if result.net_pips >= 0 else ""
+
+        lines = [
+            f"📊 Backtest: {result.channel}",
+            f"Period: {result.first_signal or '—'} → {result.last_signal or '—'} (UTC)",
+            f"Messages scanned: {result.messages_scanned} | Signals: {result.signals}",
+            f"Rules: {result.tp_note}",
+            "",
+            f"Trades: {result.trades} | Filled: {filled} ({fill_rate:.0f}%)",
+            f"  ✅ TP: {result.tp_hit} | ❌ SL: {result.sl_hit} | ⏳ Expired: {result.expired}",
+            f"  ⚪ Not filled: {result.not_filled} | 🗑️ Cancelled before fill: {result.cancelled} | ⚠️ No data: {result.no_data}",
+            "",
+            f"🎯 Winrate: {result.winrate:.1f}% ({result.tp_hit}W / {result.sl_hit}L)",
+            f"📊 Avg RR: 1:{result.avg_rr:.2f}",
+            f"💰 Net: {win_sign}{result.net_pips:.0f} pips "
+            f"(profit +{result.gross_profit_pips:.0f} / loss -{result.gross_loss_pips:.0f})",
+            f"💵 Est. profit @ 0.01 lot: {sign}${result.est_profit_usd:.2f} (normal mode, no 248)",
+        ]
+
+        recent = result.results[-15:]
+        if recent:
+            lines.append("\n--- Last 15 trades ---")
+            for r in recent:
+                if r.status == "tp_hit":
+                    icon = "✅"
+                    detail = f"TP +{r.reward_pips:.0f}p"
+                elif r.status == "sl_hit":
+                    icon = "❌"
+                    detail = f"SL -{r.risk_pips:.0f}p"
+                elif r.status == "expired":
+                    icon = "⏳"
+                    detail = "expired open"
+                elif r.status == "cancelled":
+                    icon = "🗑️"
+                    detail = "cancelled (TP1 before fill)"
+                elif r.status == "no_data":
+                    icon = "⚠️"
+                    detail = "no price data"
+                else:
+                    icon = "⚪"
+                    detail = "not filled"
+                leg = f" L{r.leg}" if r.leg else ""
                 lines.append(
-                    f"{status_icon} {r['signal_time']} {r['direction']} "
-                    f"E={r['entry']} RR=1:{r.get('rr', 0):.1f} -> {detail}"
+                    f"{icon} {r.signal_time} {r.direction}{leg} E={r.entry:g} RR=1:{r.rr:.1f} -> {detail}"
                 )
 
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        return text[:4000] + "\n…" if len(text) > 4096 else text
