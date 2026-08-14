@@ -229,9 +229,9 @@ def run_scenarios():
         _check(failures, f"{ch} breakeven close: status==SL_HIT (closed, but no double)",
                t5.status == TradeStatus.SL_HIT.value)
 
-        # ===== Channel: @Gulljanali17 (Fibonacci sequence 1,2,3,5,8,...) =====
+        # ===== Channel: @Gulljanali17 (standard doubling 1,2,4,8,... like all channels) =====
         chf = "@Gulljanali17"
-        for i, exp in enumerate([2.0, 3.0, 5.0, 8.0], start=1):
+        for i, exp in enumerate([2.0, 4.0, 8.0, 16.0], start=1):
             ticket = 20000 + i
             tf = make_trade(ticket, chf)
             tm.trades.append(tf)

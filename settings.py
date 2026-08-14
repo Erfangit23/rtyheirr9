@@ -142,12 +142,13 @@ class Settings:
 
     # --- 248 Mode (martingale lot doubling per channel on SL) ---
     # Default sequence: 1, 2, 4, 8, 16, 32, 64, 128 (powers of 2)
-    # Fibonacci sequence for @Gulljanali17: 1, 2, 3, 5, 8, 13, 21, 34
     DEFAULT_248_SEQ = [1, 2, 4, 8, 16, 32, 64, 128]
     FIBO_248_SEQ = [1, 2, 3, 5, 8, 13, 21, 34]
 
-    # Channels that use Fibonacci sequence instead of doubling
-    FIBO_CHANNELS = ["@Gulljanali17"]
+    # Channels that use Fibonacci sequence instead of doubling.
+    # Empty since 2026-08: @Gulljanali17 now uses the standard doubling
+    # sequence (1,2,4,8,...) like every other channel.
+    FIBO_CHANNELS = []
 
     @property
     def mode_248(self) -> bool:
