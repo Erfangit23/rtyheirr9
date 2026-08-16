@@ -54,6 +54,11 @@ class TradeRecord:
 class TradeManager:
     """Manages the full lifecycle of trades from signal to closure."""
 
+    # After a real SL hit, these channels pause placing new trades for
+    # SL_COOLDOWN_MINUTES (signals arriving during the pause are ignored).
+    SL_COOLDOWN_CHANNELS = ("@Gulljanali17",)
+    SL_COOLDOWN_MINUTES = 90
+
     def __init__(
         self,
         settings: Settings,
@@ -71,8 +76,11 @@ class TradeManager:
         self.trades_file = "data/trades.json"
         self._linked_orders = {}  # ticket -> {partner_ticket, breakeven_price}
         self._linked_orders_file = "data/linked_orders.json"
+        self._sl_cooldown = {}  # channel -> ISO time of last SL hit
+        self._sl_cooldown_file = "data/sl_cooldown.json"
         self._load_trades()
         self._load_linked_orders()
+        self._load_sl_cooldown()
 
     def _load_trades(self):
         """Load trade history from file."""
@@ -120,6 +128,60 @@ class TradeManager:
         except Exception as e:
             self.logger.error(f"Failed to save linked orders: {e}")
 
+    # --- SL cooldown (per-channel pause after a real SL hit) ---
+
+    def _load_sl_cooldown(self):
+        """Load SL cooldown timestamps from file (survives restarts)."""
+        try:
+            if os.path.exists(self._sl_cooldown_file):
+                with open(self._sl_cooldown_file, "r", encoding="utf-8") as f:
+                    self._sl_cooldown = json.load(f)
+                self.logger.info(f"Loaded SL cooldowns: {self._sl_cooldown}")
+        except Exception as e:
+            self.logger.error(f"Failed to load SL cooldown: {e}")
+            self._sl_cooldown = {}
+
+    def _save_sl_cooldown(self):
+        """Save SL cooldown timestamps to file."""
+        try:
+            os.makedirs("data", exist_ok=True)
+            with open(self._sl_cooldown_file, "w", encoding="utf-8") as f:
+                json.dump(self._sl_cooldown, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            self.logger.error(f"Failed to save SL cooldown: {e}")
+
+    def _register_sl_hit(self, channel: str, profit: Optional[float] = None):
+        """Record the exact time a channel hit SL (starts the cooldown).
+
+        Independent of 248 mode. Breakeven closes (|profit| < $0.50) are not
+        treated as a real SL, mirroring the 248 guard.
+        """
+        if channel not in self.SL_COOLDOWN_CHANNELS:
+            return
+        if profit is not None and abs(profit) < 0.50:
+            self.logger.info(
+                f"SL cooldown: {channel} breakeven close (profit={profit:.2f}) — no cooldown"
+            )
+            return
+        self._sl_cooldown[channel] = datetime.now(timezone.utc).isoformat()
+        self._save_sl_cooldown()
+        self.logger.info(
+            f"SL cooldown: {channel} SL hit — new trades paused for "
+            f"{self.SL_COOLDOWN_MINUTES} minutes"
+        )
+
+    def _cooldown_remaining_min(self, channel: str) -> float:
+        """Minutes of cooldown left for a channel (0 = eligible)."""
+        ts = self._sl_cooldown.get(channel)
+        if not ts:
+            return 0.0
+        try:
+            t = datetime.fromisoformat(ts)
+        except ValueError:
+            return 0.0
+        elapsed_min = (datetime.now(timezone.utc) - t).total_seconds() / 60
+        return max(0.0, self.SL_COOLDOWN_MINUTES - elapsed_min)
+
     async def process_signal(self, signal: Signal):
         """Process a parsed signal: apply risk checks and place order."""
         self.logger.info(f"Processing signal: {signal}")
@@ -134,6 +196,23 @@ class TradeManager:
                 f"Source: {signal.source_channel}"
             )
             return
+
+        # SL cooldown: after a real SL hit the channel is paused for
+        # SL_COOLDOWN_MINUTES — signals arriving in that window are ignored.
+        if signal.source_channel in self.SL_COOLDOWN_CHANNELS:
+            remaining = self._cooldown_remaining_min(signal.source_channel)
+            if remaining > 0:
+                self.logger.info(
+                    f"SL cooldown: {signal.source_channel} ignored "
+                    f"({remaining:.0f} min remaining)"
+                )
+                await self._report(
+                    f"⏳ Signal IGNORED — {signal.source_channel} is in SL cooldown:\n"
+                    f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                    f"Last SL was < {self.SL_COOLDOWN_MINUTES} min ago.\n"
+                    f"Channel eligible again in {int(remaining) + 1} min."
+                )
+                return
 
         # Check daily SL limit
         daily_summary = self.mt5.get_today_trade_summary()
@@ -935,6 +1014,7 @@ class TradeManager:
                     else:
                         trade.status = TradeStatus.SL_HIT.value
                         status_emoji = "🛑 SL HIT"
+                        self._register_sl_hit(trade.channel, deal_info["profit"])
                         if participates:
                             self._on_sl_hit(trade.channel, deal_info["profit"])
 
@@ -1303,6 +1383,7 @@ class TradeManager:
             else:
                 trade.status = TradeStatus.SL_HIT.value
                 status_emoji = "🛑 SL HIT"
+                self._register_sl_hit(trade.channel, profit)
                 if participates:
                     self._on_sl_hit(trade.channel, profit)
 
