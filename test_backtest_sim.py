@@ -109,7 +109,7 @@ def main():
     rates = [bar(T0, 4405, 4403)]  # market ~4404 -> entry adj valid
     B._apply_channel_adjustments(gsig, rates, T0)
     _check(failures, f"gulljanali entry 4400->4401 (got {gsig.entry})", gsig.entry == 4401.0)
-    _check(failures, f"gulljanali SL 4390->4392 (got {gsig.stop_loss})", gsig.stop_loss == 4392.0)
+    _check(failures, f"gulljanali SL 4390->4391 (got {gsig.stop_loss})", gsig.stop_loss == 4391.0)
 
     print("=" * 40)
     if failures:

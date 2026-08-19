@@ -15,6 +15,10 @@ from signal_parser import Signal
 from settings import Settings
 from mt5_connector import MT5Connector
 
+# @khanbours / @khanbourse / @khanbouse are all the khan channel (renames).
+# Same rules everywhere: TP1 target, cancel pending order if TP1 hit unfilled.
+KHAN_CHANNELS = ("@forexkhan", "@khanbours", "@khanbourse", "@khanbouse")
+
 
 class TradeStatus(str, Enum):
     PENDING = "pending"          # Limit order placed
@@ -233,7 +237,7 @@ class TradeManager:
         elif signal.source_channel == "@GoldVisionofficial":
             tp_index = 3
             self.logger.info("Channel @GoldVisionofficial: using TP3 as final TP, SL to entry on TP1/TP2")
-        elif signal.source_channel in ("@forexkhan", "@khanbours", "@khanbourse"):
+        elif signal.source_channel in KHAN_CHANNELS:
             tp_index = 1
             self.logger.info(f"Channel {signal.source_channel}: using TP1")
         elif signal.source_channel == "@Signal_Atlas":
@@ -257,10 +261,10 @@ class TradeManager:
 
         # For @Gulljanali17 / @bttesteamin:
         #   1) Move entry 10 pips closer to market (fills sooner).
-        #   2) Tighten SL 20 pips toward entry.
-        # On a symmetric 100-pip signal the entry move alone makes it $11 SL / $9 TP;
-        # tightening SL 20 pips brings the SL back to $9 -> $9 SL / $9 TP (1:1 RR),
-        # and that 1:1 ratio scales the same way in 248 (lot doubles, pips don't).
+        #   2) Tighten SL 10 pips toward the original SL's side.
+        # On a symmetric 100-pip signal: entry +10 pips makes TP $9, and the
+        # 10-pip tighter SL keeps the SL distance at 10.0 -> $10 SL / $9 TP
+        # (the same $ ratio holds in 248: lot doubles, pip distances don't).
         # SL is only ever tightened here, never widened. TP is not touched.
         if signal.source_channel in ("@Gulljanali17", "@bttesteamin"):
             pip = 0.1  # 1 pip in gold price units (10 pips = 1.0 price)
@@ -293,25 +297,25 @@ class TradeManager:
                             f"{signal.source_channel}: entry kept at {original_entry} (would pass market)"
                         )
 
-            # --- 2) SL: 20 pips toward (adjusted) entry, tighter ---
+            # --- 2) SL: 10 pips tighter ($10 SL / $9 TP on symmetric signals) ---
             original_sl = signal.stop_loss
             if signal.direction.upper() == "BUY":
-                adjusted_sl = round(signal.stop_loss + (20 * pip), 2)
+                adjusted_sl = round(signal.stop_loss + (10 * pip), 2)
                 if adjusted_sl < signal.entry:
                     signal.stop_loss = adjusted_sl
                     self.logger.info(
-                        f"{signal.source_channel}: SL +20 pips: {original_sl} -> {adjusted_sl}"
+                        f"{signal.source_channel}: SL +10 pips: {original_sl} -> {adjusted_sl}"
                     )
                 else:
                     self.logger.info(
                         f"{signal.source_channel}: SL kept at {original_sl} (would pass entry)"
                     )
             elif signal.direction.upper() == "SELL":
-                adjusted_sl = round(signal.stop_loss - (20 * pip), 2)
+                adjusted_sl = round(signal.stop_loss - (10 * pip), 2)
                 if adjusted_sl > signal.entry:
                     signal.stop_loss = adjusted_sl
                     self.logger.info(
-                        f"{signal.source_channel}: SL -20 pips: {original_sl} -> {adjusted_sl}"
+                        f"{signal.source_channel}: SL -10 pips: {original_sl} -> {adjusted_sl}"
                     )
                 else:
                     self.logger.info(
@@ -654,7 +658,7 @@ class TradeManager:
             status=TradeStatus.PENDING.value,
             timestamp=now,
             raw_signal=signal.raw_text[:200],
-            tp2=0 if signal.source_channel in ("@forexkhan", "@khanbours", "@khanbourse") else (signal.take_profits[1] if len(signal.take_profits) >= 2 else (signal.take_profits[0] if signal.take_profits else 0)),
+            tp2=0 if signal.source_channel in KHAN_CHANNELS else (signal.take_profits[1] if len(signal.take_profits) >= 2 else (signal.take_profits[0] if signal.take_profits else 0)),
             all_tps=list(signal.take_profits) if signal.source_channel in ("@gold_alicxzos110", "@GoldVisionofficial") else [],
         )
         self.trades.append(record)
@@ -1134,7 +1138,7 @@ class TradeManager:
                                 )
 
                 # For @forexkhan: cancel pending order if price reaches TP1 without filling
-                if trade.channel in ("@forexkhan", "@khanbours", "@khanbourse") and trade.tp > 0:
+                if trade.channel in KHAN_CHANNELS and trade.tp > 0:
                     prices = self.mt5.get_symbol_price(trade.symbol)
                     if prices:
                         current_bid, current_ask = prices

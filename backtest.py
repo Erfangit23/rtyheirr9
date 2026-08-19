@@ -171,6 +171,7 @@ class Backtester:
         "@forexkhan": 1,
         "@khanbours": 1,
         "@khanbourse": 1,
+        "@khanbouse": 1,
         "@Signal_Atlas": 2,
         "@Eliz_fxac_ademy1": 1,
     }
@@ -181,8 +182,8 @@ class Backtester:
 
     def _apply_channel_adjustments(self, sig: Signal, rates, signal_epoch: float):
         """@Gulljanali17 / @bttesteamin: entry +10 pips toward market (market
-        approximated by the first bar close at/after the signal), SL +20 pips
-        toward the entry — same math as live process_signal."""
+        approximated by the first bar close at/after the signal), SL +10 pips
+        tighter — same math as live process_signal ($10 SL / $9 TP)."""
         if sig.source_channel not in ("@Gulljanali17", "@bttesteamin"):
             return
         market = None
@@ -201,11 +202,11 @@ class Backtester:
                 if adj > market:
                     sig.entry = adj
         if sig.direction.upper() == "BUY":
-            adj = round(sig.stop_loss + 20 * pip, 2)
+            adj = round(sig.stop_loss + 10 * pip, 2)
             if adj < sig.entry:
                 sig.stop_loss = adj
         else:
-            adj = round(sig.stop_loss - 20 * pip, 2)
+            adj = round(sig.stop_loss - 10 * pip, 2)
             if adj > sig.entry:
                 sig.stop_loss = adj
 
