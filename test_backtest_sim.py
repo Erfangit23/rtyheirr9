@@ -78,23 +78,25 @@ def main():
                  take_profits=[4068, 4085], source_channel="@BrianTradingForex",
                  entries=[4060, 4063])
     rates = [
-        bar(T0 + 60, 4062, 4059),   # fills both legs (low <= 4063 and <= 4060)
-        bar(T0 + 120, 4070, 4064),  # leg1 TP (>= 4067) -> leg2 SL to 4060
-        bar(T0 + 180, 4065, 4059),  # leg2 SL at breakeven 4060
+        bar(T0, 4066, 4064),       # market ~4065 -> entries pulled +5p: 4060.5 / 4063.5
+        bar(T0 + 60, 4062, 4059),  # fills both legs (low <= 4063.5 and <= 4060.5)
+        bar(T0 + 120, 4070, 4064), # leg1 TP (>= 4067) -> leg2 SL to 4060.5
+        bar(T0 + 180, 4065, 4059), # leg2 SL at breakeven 4060.5
     ]
     outs = B._simulate_brian(sig, rates, T0)
     _check(failures, f"two leg outcomes (got {len(outs)})", len(outs) == 2)
     if len(outs) == 2:
         l1, l2 = outs[0], outs[1]
+        _check(failures, f"leg1 entry pulled to 4063.5 (got {l1.entry})", l1.entry == 4063.5)
         _check(failures, f"leg1 tp_hit (got {l1.status})", l1.status == "tp_hit")
-        _check(failures, f"leg1 +40p (got {l1.profit_pips})", l1.profit_pips == 40.0)
+        _check(failures, f"leg1 +35p (got {l1.profit_pips})", l1.profit_pips == 35.0)
         _check(failures, f"leg2 sl at breakeven (got {l2.status})", l2.status == "sl_hit")
         _check(failures, f"leg2 ~0p at breakeven (got {l2.profit_pips})", abs(l2.profit_pips) < 1e-9)
 
-    # ---- Brian dual: TP1 before fill -> both cancelled ----
-    rates = [bar(T0 + 60, 4068, 4064)]  # high >= tp1(4067), low never <= 4063
+    # ---- Brian dual: channel TP2 before fill -> both cancelled ----
+    rates = [bar(T0 + 60, 4090, 4064)]  # high >= raw TP2(4085); no fill (low > 4063.5)
     outs = B._simulate_brian(sig, rates, T0)
-    _check(failures, "both cancelled before fill",
+    _check(failures, "both cancelled before fill (TP2 rule)",
            len(outs) == 2 and all(o.status == "cancelled" for o in outs))
 
     # ---- per-channel TP rules ----

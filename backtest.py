@@ -285,11 +285,32 @@ class Backtester:
 
     def _simulate_brian(self, sig, rates, signal_epoch) -> list:
         """Dual-entry simulation: closer leg -> TP1, farther leg -> TP2 with
-        breakeven after the closer leg hits TP1. If TP1 is reached before the
-        closer leg fills, both are cancelled (live behavior)."""
+        breakeven after the closer leg hits TP1. Both entries are pulled 5 pips
+        toward market (first bar close at/after the signal approximates it).
+        Cancel rule mirrors live: if the channel's raw TP2 is reached before the
+        closer leg fills, both legs are cancelled."""
         direction = sig.direction.upper()
+
+        # Pull entries 5 pips toward market (same as live process_signal)
+        market = None
+        for bar in rates:
+            if bar["time"] >= signal_epoch:
+                market = bar["close"]
+                break
+        pull = 5 * self.PIP
+        adj_entries = []
+        for e in sig.entries:
+            a = round(e + pull, 2) if direction == "BUY" else round(e - pull, 2)
+            if market is None or (a < market if direction == "BUY" else a > market):
+                adj_entries.append(a)
+            else:
+                adj_entries.append(e)
+        sig.entries = adj_entries
+
         (e1, tp1), (e2, tp2) = self._prep_brian_legs(sig)
         sl_orig = sig.stop_loss
+        # Cancel level: the channel's raw TP2 (NOT the adjusted leg TPs)
+        cancel_tp = sig.take_profits[1] if len(sig.take_profits) >= 2 else tp1
         entry_window = self.ENTRY_WINDOW_MIN * 60
         tp_window = self.TP_SL_WINDOW_HOURS * 3600
 
@@ -306,11 +327,12 @@ class Backtester:
                 continue
             hi, lo = bar["high"], bar["low"]
 
-            # Cancel rule: price reached TP1 while the closer leg never filled
+            # Cancel rule: price reached the channel TP2 while the closer leg
+            # never filled -> both cancelled (live behavior)
             if legs[0]["fill"] is None:
                 if t > signal_epoch + entry_window:
                     break
-                if (direction == "SELL" and lo <= tp1) or (direction == "BUY" and hi >= tp1):
+                if (direction == "SELL" and lo <= cancel_tp) or (direction == "BUY" and hi >= cancel_tp):
                     legs[0]["status"] = legs[1]["status"] = "cancelled"
                     legs[0]["closed"] = legs[1]["closed"] = True
                     legs[0]["close"] = legs[1]["close"] = t
@@ -450,7 +472,7 @@ class Backtester:
 
     def _tp_note(self, channel_id: str) -> str:
         if channel_id == "@BrianTradingForex":
-            return "dual entry: closer->TP1(-10p), farther->TP2(cap 150p, breakeven)"
+            return "dual entry: entries +5p closer, closer->TP1(-10p), farther->TP2(cap 150p, breakeven), cancel at TP2 unfilled"
         if channel_id in ("@Gulljanali17", "@bttesteamin"):
             return f"TP2, entry +10p, SL +20p (live rules)"
         return f"TP{self.TP_RULES.get(channel_id, 2)} (live rules)"

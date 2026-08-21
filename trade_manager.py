@@ -335,6 +335,31 @@ class TradeManager:
             tp1_price = signal.take_profits[0]
             tp2_price = signal.take_profits[1] if len(signal.take_profits) >= 2 else signal.take_profits[0]
 
+            # @BrianTradingForex: entries often sit far from market and the move
+            # runs without filling. Pull BOTH entries 5 pips closer to market
+            # (BUY limit: +0.5, SELL limit: -0.5), guarded against crossing it.
+            if signal.source_channel == "@BrianTradingForex":
+                entry_adj = 5 * 0.1  # 5 pips in price units
+                prices = self.mt5.get_symbol_price(signal.symbol)
+                if signal.direction.upper() == "BUY":
+                    a1, a2 = round(entry1 + entry_adj, 2), round(entry2 + entry_adj, 2)
+                    current_ask = prices[1] if prices else None
+                    if current_ask is None or a1 < current_ask:
+                        entry1 = a1
+                    if current_ask is None or a2 < current_ask:
+                        entry2 = a2
+                else:  # SELL
+                    a1, a2 = round(entry1 - entry_adj, 2), round(entry2 - entry_adj, 2)
+                    current_bid = prices[0] if prices else None
+                    if current_bid is None or a1 > current_bid:
+                        entry1 = a1
+                    if current_bid is None or a2 > current_bid:
+                        entry2 = a2
+                self.logger.info(
+                    f"@BrianTradingForex: entries pulled 5 pips closer to market: "
+                    f"{signal.entries} -> [{entry1}, {entry2}]"
+                )
+
             if signal.source_channel == "@BrianTradingForex":
                 # Adjust TPs 10 pips closer to entry to increase fill probability
                 # For BUY: lower the TP by 1.0 (10 pips)
@@ -555,10 +580,13 @@ class TradeManager:
                 )
 
             self._save_trades()
+            raw_tp2 = signal.take_profits[1] if len(signal.take_profits) >= 2 else tp2_price
             report_lines.append(
                 f"SL: {signal.stop_loss}\n"
                 f"Lot: closer(TP1)={self._get_lot_size(signal.source_channel)} [248] | "
                 f"farther(TP2)={self.settings.lot_size} [flat 0.01]\n"
+                f"Entries pulled 5 pips closer to market (fill sooner)\n"
+                f"Cancel rule: if price reaches TP2 ({raw_tp2}) without filling, both orders cancel\n"
                 f"When first order hits TP1, second order SL moves to entry (risk-free)"
             )
             await self._report("\n".join(report_lines))
@@ -1173,25 +1201,27 @@ class TradeManager:
                                     f"Failed to cancel order #{trade.ticket}"
                                 )
 
-                # For @BrianTradingForex: if pending order not filled and price hit TP (TP1),
-                # cancel BOTH orders (the move happened without us)
-                if trade.channel == "@BrianTradingForex" and trade.tp > 0:
+                # For @BrianTradingForex: if pending order not filled and price hit
+                # the channel's TP2 (trade.tp2), cancel BOTH orders — the move is
+                # over without us. Cancels at TP2, NOT TP1, so far-from-market
+                # entries still have room to fill.
+                if trade.channel == "@BrianTradingForex" and trade.tp2 > 0:
                     prices = self.mt5.get_symbol_price(trade.symbol)
                     if prices:
                         current_bid, current_ask = prices
-                        tp1 = trade.tp  # The TP set on this order
+                        tp2 = trade.tp2  # the channel's raw TP2
 
                         should_cancel = False
                         if trade.direction == "SELL":
-                            if current_ask <= tp1:
+                            if current_ask <= tp2:
                                 should_cancel = True
                         elif trade.direction == "BUY":
-                            if current_bid >= tp1:
+                            if current_bid >= tp2:
                                 should_cancel = True
 
                         if should_cancel:
                             self.logger.info(
-                                f"BrianTradingForex: Price reached TP1 ({tp1}) for pending "
+                                f"BrianTradingForex: Price reached TP2 ({tp2}) for pending "
                                 f"{trade.direction} order #{trade.ticket}. Cancelling both orders."
                             )
                             # Cancel this order
@@ -1215,27 +1245,27 @@ class TradeManager:
                                                 updated = True
                                                 break
                                         await self._report(
-                                            f"🗑️ BOTH orders CANCELLED - price hit TP1 without filling:\n"
+                                            f"🗑️ BOTH orders CANCELLED - price hit TP2 without filling:\n"
                                             f"#{trade.ticket} & #{partner_ticket} {trade.direction} {trade.symbol}\n"
                                             f"Entry: {trade.entry} (never filled)\n"
-                                            f"TP1: {tp1} was reached\n"
+                                            f"TP2: {tp2} was reached\n"
                                             f"Source: {trade.channel}"
                                         )
                                     else:
                                         # Partner may have been filled already — just report this one
                                         await self._report(
-                                            f"🗑️ Order CANCELLED - price hit TP1 without filling:\n"
+                                            f"🗑️ Order CANCELLED - price hit TP2 without filling:\n"
                                             f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
                                             f"Entry: {trade.entry} (never filled)\n"
-                                            f"TP1: {tp1} was reached\n"
+                                            f"TP2: {tp2} was reached\n"
                                             f"Source: {trade.channel}"
                                         )
                                 else:
                                     await self._report(
-                                        f"🗑️ Order CANCELLED - price hit TP1 without filling:\n"
+                                        f"🗑️ Order CANCELLED - price hit TP2 without filling:\n"
                                         f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
                                         f"Entry: {trade.entry} (never filled)\n"
-                                        f"TP1: {tp1} was reached\n"
+                                        f"TP2: {tp2} was reached\n"
                                         f"Source: {trade.channel}"
                                     )
                             else:
