@@ -218,6 +218,34 @@ class TradeManager:
                 )
                 return
 
+        # Sanity check: SL and all TPs must be on the correct side of the entry.
+        # A value on the wrong side means the signal was mistyped by the channel
+        # or misparsed — such an order can never be valid.
+        entry = signal.entry
+        wrong = None
+        if signal.direction.upper() == "BUY":
+            if signal.stop_loss >= entry:
+                wrong = f"SL {signal.stop_loss} >= entry {entry} (SL must be below for BUY)"
+            elif any(tp <= entry for tp in signal.take_profits):
+                wrong = f"a TP at/below entry {entry} (TP must be above for BUY)"
+        elif signal.direction.upper() == "SELL":
+            if signal.stop_loss <= entry:
+                wrong = f"SL {signal.stop_loss} <= entry {entry} (SL must be above for SELL)"
+            elif any(tp >= entry for tp in signal.take_profits):
+                wrong = f"a TP at/above entry {entry} (TP must be below for SELL)"
+        if wrong:
+            self.logger.warning(
+                f"Impossible geometry, rejecting signal from {signal.source_channel}: {wrong}"
+            )
+            await self._report(
+                f"🚫 Signal REJECTED - SL/TP on wrong side (possible misparse):\n"
+                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                f"SL={signal.stop_loss} TPs={signal.take_profits}\n"
+                f"Problem: {wrong}\n"
+                f"Source: {signal.source_channel}"
+            )
+            return
+
         # Check daily SL limit
         daily_summary = self.mt5.get_today_trade_summary()
         daily_loss = daily_summary.get("total_loss_usd", 0.0)
@@ -544,6 +572,30 @@ class TradeManager:
                     )
                     self.trades.append(record)
                     continue
+                if isinstance(ticket, int) and ticket < 0:
+                    # Any other MT5 rejection (e.g. -10015 invalid price) — must
+                    # not fall through to the success record below.
+                    report_lines.append(
+                        f"  [{label}] Entry @ {entry_val} TP @ {tp_val}: ❌ MT5 rejected (code {abs(ticket)})"
+                    )
+                    record = TradeRecord(
+                        ticket=0,
+                        channel=signal.source_channel,
+                        symbol=signal.symbol,
+                        direction=signal.direction,
+                        entry=entry_val,
+                        sl=signal.stop_loss,
+                        tp=tp_val,
+                        tp_index=1,
+                        lot_size=_leg_lot(label),
+                        participates_248=(label == "first"),
+                        status=TradeStatus.CANCELLED.value,
+                        timestamp=now,
+                        raw_signal=signal.raw_text[:200],
+                        tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else 0,
+                    )
+                    self.trades.append(record)
+                    continue
 
                 # Success
                 record = TradeRecord(
@@ -625,20 +677,10 @@ class TradeManager:
             )
             return
 
-        if isinstance(ticket, int) and ticket < 0:
-            # Other MT5 error (negative retcode)
-            retcode = abs(ticket)
-            self.logger.error(f"Order rejected by MT5: retcode={retcode}")
-            await self._report(
-                f"❌ Order REJECTED by MT5 (code {retcode}):\n"
-                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
-                f"SL={signal.stop_loss} TP={signal.take_profits[tp_index-1]}\n"
-                f"Source: {signal.source_channel}"
-            )
-            return
-
         if ticket == -1:
-            # Rejected due to SL limit
+            # Rejected due to SL limit.
+            # NOTE: must be checked BEFORE the generic negative-retcode branch
+            # below — -1 is our sentinel for "SL too large", not an MT5 code.
             sl_pips = abs(signal.entry - signal.stop_loss) / 0.1
             record = TradeRecord(
                 ticket=0,
@@ -670,6 +712,18 @@ class TradeManager:
                 "sl": signal.stop_loss,
                 "reason": f"SL {sl_pips:.0f} pips > max {self.settings.max_sl_pips}",
             })
+            return
+
+        if isinstance(ticket, int) and ticket < 0:
+            # Other MT5 error (negative retcode)
+            retcode = abs(ticket)
+            self.logger.error(f"Order rejected by MT5: retcode={retcode}")
+            await self._report(
+                f"❌ Order REJECTED by MT5 (code {retcode}):\n"
+                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                f"SL={signal.stop_loss} TP={signal.take_profits[tp_index-1]}\n"
+                f"Source: {signal.source_channel}"
+            )
             return
 
         # Success

@@ -412,7 +412,7 @@ class MT5Connector:
     def get_today_trade_summary(self) -> dict:
         """Get summary of today's deals for daily SL tracking."""
         if not self.ensure_connected():
-            return {"deals": [], "total_loss_pips": 0.0}
+            return {"deals": [], "total_loss_usd": 0.0}
 
         from datetime import datetime, timezone
         today = datetime.now(timezone.utc)
@@ -420,7 +420,7 @@ class MT5Connector:
 
         deals = mt5.history_deals_get(utc_from, today)
         if deals is None:
-            return {"deals": [], "total_loss_pips": 0.0}
+            return {"deals": [], "total_loss_usd": 0.0}
 
         total_loss = 0.0
         deal_list = []

@@ -34,6 +34,8 @@ class FakeMT5:
         self.bid = 4404.0
         self.ask = 4405.0
         self.captured = None
+        self.force_ticket = None
+        self.calls = 0
 
     def ensure_connected(self):
         return True
@@ -45,6 +47,9 @@ class FakeMT5:
         return (self.bid, self.ask)
 
     def place_limit_order(self, signal, lot_size, tp_index=2, max_sl_pips=150):
+        self.calls += 1
+        if self.force_ticket is not None:
+            return self.force_ticket
         self.captured = signal
         return 70001
 
@@ -130,6 +135,42 @@ def run_scenarios():
                 channel="@forexkhan", bid=4395.0, ask=4396.0)
         _check(failures, "@forexkhan SELL entry unchanged 4400", c and c.entry == 4400.0)
         _check(failures, "@forexkhan SELL SL unchanged 4410", c and c.stop_loss == 4410.0)
+
+        # --- SL-too-large (-1) is reported as REJECTED_SL, not "MT5 code 1" ---
+        mt5.force_ticket = -1
+        sig = Signal(symbol="XAUUSD", direction="SELL", entry=4400.0,
+                     stop_loss=4540.0, take_profits=[4380.0], source_channel="@forexkhan")
+        asyncio.run(tm.process_signal(sig))
+        mt5.force_ticket = None
+        rec = tm.trades[-1] if tm.trades else None
+        _check(failures, f"-1 -> rejected_sl record (got {rec.status if rec else 'none'})",
+               rec is not None and rec.status == "rejected_sl")
+
+        # --- invalid price (-10015): skipped, no trade record ---
+        mt5.force_ticket = -10015
+        n_before = len(tm.trades)
+        sig = Signal(symbol="XAUUSD", direction="BUY", entry=4400.0,
+                     stop_loss=4390.0, take_profits=[4410.0], source_channel="@forexkhan")
+        asyncio.run(tm.process_signal(sig))
+        mt5.force_ticket = None
+        _check(failures, f"-10015 -> no record added ({len(tm.trades) - n_before})",
+               len(tm.trades) == n_before)
+
+        # --- wrong-side SL (misparse) rejected before ordering ---
+        calls_before = mt5.calls
+        sig = Signal(symbol="XAUUSD", direction="SELL", entry=4400.0,
+                     stop_loss=4350.0, take_profits=[4380.0], source_channel="@forexkhan")
+        asyncio.run(tm.process_signal(sig))
+        _check(failures, f"wrong-side SL: no order sent (calls {mt5.calls - calls_before})",
+               mt5.calls == calls_before)
+
+        # --- wrong-side TP (misparse) rejected before ordering ---
+        calls_before = mt5.calls
+        sig = Signal(symbol="XAUUSD", direction="BUY", entry=4400.0,
+                     stop_loss=4390.0, take_profits=[4395.0], source_channel="@forexkhan")
+        asyncio.run(tm.process_signal(sig))
+        _check(failures, f"wrong-side TP: no order sent (calls {mt5.calls - calls_before})",
+               mt5.calls == calls_before)
 
         return failures
     finally:
