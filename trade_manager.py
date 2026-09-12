@@ -14,6 +14,7 @@ from enum import Enum
 from signal_parser import Signal
 from settings import Settings
 from mt5_connector import MT5Connector
+from signal_validator import SignalValidator
 
 # @khanbours / @khanbourse / @khanbouse are all the khan channel (renames).
 # Same rules everywhere: TP1 target, cancel pending order if TP1 hit unfilled.
@@ -82,6 +83,7 @@ class TradeManager:
         self._linked_orders_file = "data/linked_orders.json"
         self._sl_cooldown = {}  # channel -> ISO time of last SL hit
         self._sl_cooldown_file = "data/sl_cooldown.json"
+        self.validator = SignalValidator(settings=settings, logger=self.logger)
         self._load_trades()
         self._load_linked_orders()
         self._load_sl_cooldown()
@@ -245,6 +247,36 @@ class TradeManager:
                 f"Source: {signal.source_channel}"
             )
             return
+
+        # Signal quality filters (EMA200 regime / RSI exhaustion / ATR SL floor).
+        # Runs on the raw signal values, before any channel adjustments.
+        # Modes: "on" = block, "dry_run" = report but still place, "off" = skip.
+        decision = self.validator.validate(signal)
+        if decision is not None and not decision.passed:
+            if decision.mode == "on":
+                self.logger.info(
+                    f"Filters REJECTED signal from {signal.source_channel}: "
+                    f"{decision.failures_text()}"
+                )
+                await self._report(
+                    f"🚦 Signal REJECTED by filters:\n"
+                    f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                    f"{decision.failures_text()}\n"
+                    f"Source: {signal.source_channel}\n"
+                    f"(/filters for status, /filtermode off to disable)"
+                )
+                return
+            self.logger.info(
+                f"Filters (dry-run) would reject {signal.source_channel}: "
+                f"{decision.failures_text()}"
+            )
+            await self._report(
+                f"🧪 FILTER dry-run — signal would be rejected (trade still placed):\n"
+                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                f"{decision.failures_text()}\n"
+                f"Source: {signal.source_channel}\n"
+                f"(/filtermode on to start enforcing)"
+            )
 
         # Check daily SL limit
         daily_summary = self.mt5.get_today_trade_summary()

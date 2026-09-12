@@ -69,5 +69,28 @@
     "max_daily_sl_pips": 500,
     "bot_active": true,
     "settings_password": "Amin123"
+  },
+  "validation": {
+    "mode": "dry_run",
+    "ema200": {
+      "enabled": true,
+      "timeframe": "H1",
+      "buffer_atr_mult": 0.3,
+      "ext_guard": false,
+      "ext_guard_atr_mult": 2.5
+    },
+    "rsi": {
+      "enabled": true,
+      "timeframe": "M15",
+      "period": 14,
+      "buy_max": 75,
+      "sell_min": 25
+    },
+    "atr_sl": {
+      "enabled": true,
+      "timeframe": "M15",
+      "period": 14,
+      "min_sl_atr_mult": 0.5
+    }
   }
 }

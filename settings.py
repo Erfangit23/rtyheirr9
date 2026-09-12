@@ -201,6 +201,96 @@ class Settings:
             channels[channel_id] = 0
             self.save()
 
+    # --- Signal validation filters (EMA200 / RSI / ATR SL floor) ---
+    # Defaults are deliberately LENIENT so the filters rarely block; tune via
+    # dry-run reports before enforcing. Per-channel overrides live in the
+    # channel config as "filters": false (skip all) or a dict like
+    # {"rsi": false, "ema200": {"buffer_atr_mult": 0.5}}.
+    VALIDATION_DEFAULTS = {
+        "mode": "dry_run",
+        "ema200": {
+            "enabled": True,
+            "timeframe": "H1",
+            "buffer_atr_mult": 0.3,   # neutral zone around the EMA (x ATR H1)
+            "ext_guard": False,        # reject over-extended entries (off by default)
+            "ext_guard_atr_mult": 2.5,
+        },
+        "rsi": {
+            "enabled": True,
+            "timeframe": "M15",
+            "period": 14,
+            "buy_max": 75,   # reject BUY at/above (exhaustion)
+            "sell_min": 25,  # reject SELL at/below
+        },
+        "atr_sl": {
+            "enabled": True,
+            "timeframe": "M15",
+            "period": 14,
+            "min_sl_atr_mult": 0.5,  # reject SL tighter than 0.5 x ATR
+        },
+    }
+    FILTER_NAMES = ("ema200", "rsi", "atr_sl")
+
+    def get_validation_mode(self) -> str:
+        """off | dry_run | on"""
+        return str(self._data.get("validation", {}).get("mode", "dry_run")).lower()
+
+    def set_validation_mode(self, mode: str):
+        with self._lock:
+            self._data.setdefault("validation", {})["mode"] = mode
+        self.save()
+
+    def channel_filters_disabled(self, channel_id: str) -> bool:
+        """Channel config has "filters": false -> validator skips the channel."""
+        ch = self.get_channel_by_id(channel_id)
+        return isinstance(ch, dict) and ch.get("filters") is False
+
+    def filter_config_for_channel(self, channel_id: str, name: str):
+        """Merged filter config (defaults <- validation block <- channel
+        override). Returns None when the filter is disabled for the channel."""
+        base = dict(self.VALIDATION_DEFAULTS.get(name, {}))
+        base.update(self._data.get("validation", {}).get(name, {}) or {})
+        ch = self.get_channel_by_id(channel_id)
+        if isinstance(ch, dict):
+            ov = ch.get("filters")
+            if ov is False:
+                return None
+            if isinstance(ov, dict):
+                o = ov.get(name)
+                if o is False:
+                    return None
+                if o is True:
+                    base["enabled"] = True  # channel re-enables a globally-off filter
+                elif isinstance(o, dict):
+                    base.update(o)
+        return base
+
+    def channel_filter_overrides(self) -> dict:
+        """Channels that carry a per-channel filters override, for display."""
+        out = {}
+        for ch in self._data.get("channels", []):
+            if not isinstance(ch, dict):
+                continue
+            if isinstance(ch.get("filters"), dict):
+                out[ch.get("id")] = ch["filters"]
+            elif ch.get("filters") is False:
+                out[ch.get("id")] = False
+        return out
+
+    def set_filter_enabled(self, name: str, enabled: bool, channel_id: str = None):
+        """Toggle a filter globally or for one channel (from Telegram)."""
+        with self._lock:
+            if channel_id:
+                for ch in self._data.get("channels", []):
+                    if ch.get("id") == channel_id:
+                        if not isinstance(ch.get("filters"), dict):
+                            ch["filters"] = {}
+                        ch["filters"][name] = enabled
+                        break
+            else:
+                self._data.setdefault("validation", {}).setdefault(name, {})["enabled"] = enabled
+        self.save()
+
     # --- Setters ---
     def set_lot_size(self, value: float):
         with self._lock:

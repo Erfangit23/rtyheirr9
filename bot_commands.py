@@ -70,6 +70,9 @@ class CommandHandler:
                 "/trades - Open positions & pending orders\n"
                 "/report - Today's trade summary\n"
                 "/backtest - Backtest a channel's signals\n"
+                "/filters - Signal filter status (EMA200/RSI/ATR)\n"
+                "/filtermode off|dry|on - Filter mode\n"
+                "/fema /frsi /fatr on|off [@channel] - Toggle a filter\n"
                 "/makeaion - Enable AI signal parsing\n"
                 "/makeaioff - Disable AI signal parsing\n"
                 "/248on - Enable 248 lot doubling mode\n"
@@ -154,6 +157,47 @@ class CommandHandler:
                 f"Multiplier: {mult}x\n"
                 f"Next lot for {test_ch}: {lot}\n"
                 f"Check /248status to verify."
+            )
+
+        # --- Signal filter commands ---
+        if text.lower() == "/filters":
+            return self._cmd_filters()
+
+        if text.lower().startswith("/filtermode"):
+            parts = text.split()
+            mode_map = {"off": "off", "dry": "dry_run", "on": "on"}
+            if len(parts) < 2 or parts[1].lower() not in mode_map:
+                return (
+                    "Usage: /filtermode off|dry|on\n"
+                    "  off = filters disabled\n"
+                    "  dry = report only, trades still placed\n"
+                    "  on  = enforce (bad signals blocked)"
+                )
+            self.settings.set_validation_mode(mode_map[parts[1].lower()])
+            return f"🧰 Filter mode: {self._filter_mode_label()}\nSend /filters for full status."
+
+        filter_cmds = {"/fema": "ema200", "/frsi": "rsi", "/fatr": "atr_sl"}
+        first_token = text.split()[0].lower() if text.split() else ""
+        if first_token in filter_cmds:
+            parts = text.split()
+            fname = filter_cmds[first_token]
+            channel_id = None
+            if len(parts) >= 3:
+                channel_id = parts[2] if parts[2].startswith("@") else "@" + parts[2]
+                if self.settings.get_channel_by_id(channel_id) is None:
+                    return f"❌ Channel {channel_id} not found in config."
+            if len(parts) < 2 or parts[1].lower() not in ("on", "off"):
+                cfg = self.settings.filter_config_for_channel(channel_id, fname) or {}
+                cur = "ON" if cfg.get("enabled") else "OFF"
+                scope = channel_id or "global"
+                return f"Usage: /{first_token} on|off [@channel]\nCurrent ({scope}): {cur}"
+            enabled = parts[1].lower() == "on"
+            self.settings.set_filter_enabled(fname, enabled, channel_id)
+            scope = channel_id or "ALL channels"
+            return (
+                f"✅ {fname} filter {'ON' if enabled else 'OFF'} for {scope}\n"
+                f"Mode: {self._filter_mode_label()}\n"
+                f"Send /filters for full status."
             )
 
         # --- Password handling ---
@@ -417,6 +461,57 @@ class CommandHandler:
             "Then use: chan on <@channel> or chan off <@channel>"
         )
 
+        return "".join(lines)
+
+    def _filter_mode_label(self) -> str:
+        m = self.settings.get_validation_mode()
+        return {
+            "off": "OFF (no filtering)",
+            "dry_run": "DRY-RUN (report only, trades still placed)",
+            "on": "ENFORCING (failing signals blocked)",
+        }.get(m, m)
+
+    def _cmd_filters(self) -> str:
+        s = self.settings
+        lines = [f"🧰 Signal Filters\nMode: {self._filter_mode_label()}\n"]
+        for name in s.FILTER_NAMES:
+            cfg = s.filter_config_for_channel(None, name) or {}
+            if name == "ema200":
+                ext = "on" if cfg.get("ext_guard") else "off"
+                lines.append(
+                    f"• EMA200: {'ON' if cfg.get('enabled') else 'OFF'}"
+                    f" — {cfg.get('timeframe', 'H1')}, neutral buffer"
+                    f" {cfg.get('buffer_atr_mult', 0.3)}xATR,"
+                    f" extension guard {ext}\n"
+                )
+            elif name == "rsi":
+                lines.append(
+                    f"• RSI: {'ON' if cfg.get('enabled') else 'OFF'}"
+                    f" — RSI({cfg.get('period', 14)},{cfg.get('timeframe', 'M15')}),"
+                    f" reject Buy >= {cfg.get('buy_max', 75)},"
+                    f" Sell <= {cfg.get('sell_min', 25)}\n"
+                )
+            elif name == "atr_sl":
+                lines.append(
+                    f"• ATR SL floor: {'ON' if cfg.get('enabled') else 'OFF'}"
+                    f" — min SL {cfg.get('min_sl_atr_mult', 0.5)}x"
+                    f" ATR({cfg.get('period', 14)},{cfg.get('timeframe', 'M15')})\n"
+                )
+        overrides = s.channel_filter_overrides()
+        if overrides:
+            lines.append("\nPer-channel overrides:")
+            for ch_id, ov in overrides.items():
+                if ov is False:
+                    lines.append(f"  {ch_id}: ALL filters off")
+                else:
+                    parts = []
+                    for k, v in ov.items():
+                        parts.append(f"{k}={'off' if v is False else v}")
+                    lines.append(f"  {ch_id}: {', '.join(parts)}")
+        lines.append(
+            "\nToggle: /fema /frsi /fatr on|off [@channel]\n"
+            "Mode: /filtermode off|dry|on"
+        )
         return "".join(lines)
 
     def _cmd_backtest_start(self, user_id: int) -> str:
