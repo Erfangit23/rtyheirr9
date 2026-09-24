@@ -152,17 +152,26 @@ async def main():
         logger.info(f"Modify signal from {channel}: SL={new_sl}, TP={new_tp}")
         for trade in reversed(trade_manager.trades):
             if trade.channel == channel and trade.status == "filled":
+                moved = False
+                parts = []
                 if new_sl is not None:
-                    moved = trade_manager._modify_position_sl(trade.ticket, float(new_sl))
-                    if moved:
+                    if trade_manager._modify_position_sl_tp(trade.ticket, new_sl=float(new_sl)):
                         trade.sl = float(new_sl)
-                        trade_manager._save_trades()
-                        await tg_manager.send_report(
-                            f"🔧 SL modified (channel signal):\n"
-                            f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
-                            f"New SL: {new_sl}\n"
-                            f"Source: {channel}"
-                        )
+                        parts.append(f"New SL: {new_sl}")
+                        moved = True
+                if new_tp is not None:
+                    if trade_manager._modify_position_sl_tp(trade.ticket, new_tp=float(new_tp)):
+                        trade.tp = float(new_tp)
+                        parts.append(f"New TP: {new_tp}")
+                        moved = True
+                if moved:
+                    trade_manager._save_trades()
+                    await tg_manager.send_report(
+                        f"🔧 Position modified (channel signal):\n"
+                        f"#{trade.ticket} {trade.direction} {trade.symbol}\n"
+                        + "\n".join(parts) +
+                        f"\nSource: {channel}"
+                    )
                 break
 
     tg_manager.register_modify_handler(modify_callback)

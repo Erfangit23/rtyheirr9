@@ -474,7 +474,7 @@ class Backtester:
         if channel_id == "@BrianTradingForex":
             return "dual entry: entries +5p closer, closer->TP1(-10p), farther->TP2(cap 150p, breakeven), cancel at TP2 unfilled"
         if channel_id in ("@Gulljanali17", "@bttesteamin"):
-            return f"TP2, entry +10p, SL +20p (live rules)"
+            return "TP2, entry +10p, SL +10p tighter (live rules)"
         return f"TP{self.TP_RULES.get(channel_id, 2)} (live rules)"
 
     # ------------------------------------------------------------------

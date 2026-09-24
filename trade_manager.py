@@ -89,17 +89,80 @@ class TradeManager:
         self._load_sl_cooldown()
 
     def _load_trades(self):
-        """Load trade history from file."""
+        """Load trade history from file.
+
+        Tolerant of schema drift so history is never silently wiped:
+        - unknown fields in a record are dropped (not fatal)
+        - missing fields are filled with their dataclass defaults (not fatal)
+        - a record is only skipped if a required field (ticket, channel,
+          ...) is truly missing
+        - a corrupt/unparseable FILE is backed up to <file>.corrupt before
+          starting fresh, so the data is recoverable
+        """
         os.makedirs("data", exist_ok=True)
         try:
-            if os.path.exists(self.trades_file):
-                with open(self.trades_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self.trades = [TradeRecord(**t) for t in data]
-                self.logger.info(f"Loaded {len(self.trades)} trade records.")
+            if not os.path.exists(self.trades_file):
+                return
+            with open(self.trades_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                raise ValueError(f"expected a JSON list, got {type(data).__name__}")
+            loaded, skipped = [], 0
+            for t in data:
+                if not isinstance(t, dict):
+                    skipped += 1
+                    continue
+                rec = self._coerce_trade_record(t)
+                if rec is None:
+                    skipped += 1
+                else:
+                    loaded.append(rec)
+            if skipped:
+                self.logger.warning(
+                    f"Skipped {skipped} unreadable trade record(s) in {self.trades_file}"
+                )
+            self.trades = loaded
+            self.logger.info(f"Loaded {len(self.trades)} trade records.")
+        except json.JSONDecodeError as e:
+            backup = f"{self.trades_file}.corrupt"
+            try:
+                import shutil
+                shutil.copy2(self.trades_file, backup)
+                self.logger.error(
+                    f"Trades file corrupt ({e}); backed up to {backup}, starting fresh"
+                )
+            except Exception as backup_err:
+                self.logger.error(
+                    f"Trades file corrupt ({e}); backup failed ({backup_err}), starting fresh"
+                )
+            self.trades = []
         except Exception as e:
             self.logger.error(f"Failed to load trades: {e}")
             self.trades = []
+
+    @staticmethod
+    def _coerce_trade_record(t: dict) -> Optional["TradeRecord"]:
+        """Build a TradeRecord from a persisted dict, absorbing schema drift.
+
+        Unknown keys are ignored; missing keys fall back to their defaults.
+        Returns None only when a field with no default is missing.
+        """
+        from dataclasses import fields as dc_fields, MISSING
+        specs = {f.name: f for f in dc_fields(TradeRecord)}
+        kwargs = {k: v for k, v in t.items() if k in specs}
+        for name, f in specs.items():
+            if name in kwargs:
+                continue
+            if f.default is not MISSING:
+                kwargs[name] = f.default
+            elif f.default_factory is not MISSING:  # type: ignore[misc]
+                kwargs[name] = f.default_factory()  # type: ignore[misc]
+            else:
+                return None  # required field (ticket, channel, ...) missing
+        try:
+            return TradeRecord(**kwargs)
+        except TypeError:
+            return None
 
     def _save_trades(self):
         """Save trade history to file."""
@@ -1091,26 +1154,37 @@ class TradeManager:
                 # Order is gone — could be: filled (position created), TP hit, SL hit, or cancelled
 
                 # First: check if this order became a position (MT5 assigns different ticket)
-                # Look for positions matching our magic number and direction
+                # Look for positions matching our magic number and direction.
+                # Guards against mis-attribution when several same-direction
+                # XAUUSD orders are live at once:
+                #   1) positions already tracked by another trade record are excluded
+                #   2) among the rest, the one whose open price is closest to this
+                #      order's entry wins (limit orders fill at/near their entry)
                 position_found = False
-                for pos in positions:
-                    if pos.magic == 779900 and pos.symbol == trade.symbol:
-                        # Match by direction and proximity of entry/position price
-                        if trade.direction == "BUY" and pos.type == 0:  # POSITION_TYPE_BUY
-                            position_found = True
-                            # Update ticket to position ticket for future tracking
-                            trade.ticket = pos.ticket
-                            self.logger.info(
-                                f"Matched order #{trade.ticket} to position #{pos.ticket} (BUY)"
-                            )
-                            break
-                        elif trade.direction == "SELL" and pos.type == 1:  # POSITION_TYPE_SELL
-                            position_found = True
-                            trade.ticket = pos.ticket
-                            self.logger.info(
-                                f"Matched order #{trade.ticket} to position #{pos.ticket} (SELL)"
-                            )
-                            break
+                claimed_tickets = {t.ticket for t in self.trades if t is not trade}
+                candidates = [
+                    pos for pos in positions
+                    if pos.magic == 779900
+                    and pos.symbol == trade.symbol
+                    and pos.ticket not in claimed_tickets
+                    and (
+                        (trade.direction == "BUY" and pos.type == 0)    # POSITION_TYPE_BUY
+                        or (trade.direction == "SELL" and pos.type == 1)  # POSITION_TYPE_SELL
+                    )
+                ]
+                if candidates:
+                    best = min(
+                        candidates,
+                        key=lambda p: abs(getattr(p, "price_open", trade.entry) - trade.entry),
+                    )
+                    position_found = True
+                    old_ticket = trade.ticket
+                    trade.ticket = best.ticket
+                    self.logger.info(
+                        f"Matched order #{old_ticket} to position #{best.ticket} "
+                        f"({trade.direction}, price_open={getattr(best, 'price_open', '?')} "
+                        f"vs entry={trade.entry}; {len(candidates)} candidate(s))"
+                    )
 
                 if position_found:
                     # It's a filled position — mark as filled and continue
@@ -1630,46 +1704,63 @@ class TradeManager:
 
     def _modify_position_sl(self, ticket: int, new_sl: float) -> bool:
         """Modify an open position's stop loss by ticket."""
+        return self._modify_position_sl_tp(ticket, new_sl=new_sl)
+
+    def _modify_position_sl_tp(
+        self,
+        ticket: int,
+        new_sl: Optional[float] = None,
+        new_tp: Optional[float] = None,
+    ) -> bool:
+        """Modify an open position's SL and/or TP by ticket.
+
+        Only the fields explicitly passed are changed; the other keeps its
+        current value from the terminal.
+        """
+        if new_sl is None and new_tp is None:
+            self.logger.warning(f"SL/TP modify: nothing to change for #{ticket}")
+            return False
         if not self.mt5.ensure_connected():
-            self.logger.error(f"SL modify: MT5 not connected for #{ticket}")
+            self.logger.error(f"SL/TP modify: MT5 not connected for #{ticket}")
             return False
         try:
             import MetaTrader5 as mt5
             positions = mt5.positions_get(ticket=ticket)
             if not positions or len(positions) == 0:
-                self.logger.warning(f"SL modify: Position #{ticket} not found (not an open position)")
+                self.logger.warning(f"SL/TP modify: Position #{ticket} not found (not an open position)")
                 return False
             pos = positions[0]
             sym_info = mt5.symbol_info(pos.symbol)
             if sym_info is None:
-                self.logger.error(f"SL modify: Symbol info not found for {pos.symbol}")
+                self.logger.error(f"SL/TP modify: Symbol info not found for {pos.symbol}")
                 return False
             digits = sym_info.digits
             request = {
                 "action": mt5.TRADE_ACTION_SLTP,
                 "position": ticket,
                 "symbol": pos.symbol,
-                "sl": round(new_sl, digits),
-                "tp": pos.tp,
+                "sl": round(new_sl, digits) if new_sl is not None else pos.sl,
+                "tp": round(new_tp, digits) if new_tp is not None else pos.tp,
             }
             self.logger.info(
-                f"SL modify request: #{ticket} symbol={pos.symbol} "
-                f"new_sl={round(new_sl, digits)} current_sl={pos.sl}"
+                f"SL/TP modify request: #{ticket} symbol={pos.symbol} "
+                f"new_sl={request['sl']} new_tp={request['tp']} "
+                f"(current sl={pos.sl} tp={pos.tp})"
             )
             result = mt5.order_send(request)
             if result is None:
-                self.logger.error(f"SL modify: order_send None for #{ticket}: {mt5.last_error()}")
+                self.logger.error(f"SL/TP modify: order_send None for #{ticket}: {mt5.last_error()}")
                 return False
             if result.retcode != mt5.TRADE_RETCODE_DONE:
                 self.logger.error(
-                    f"SL modify FAILED #{ticket}: retcode={result.retcode} "
+                    f"SL/TP modify FAILED #{ticket}: retcode={result.retcode} "
                     f"comment={result.comment}"
                 )
                 return False
-            self.logger.info(f"SL modify SUCCESS #{ticket}: SL -> {new_sl}")
+            self.logger.info(f"SL/TP modify SUCCESS #{ticket}: SL -> {request['sl']}, TP -> {request['tp']}")
             return True
         except Exception as e:
-            self.logger.error(f"SL modify exception #{ticket}: {e}", exc_info=True)
+            self.logger.error(f"SL/TP modify exception #{ticket}: {e}", exc_info=True)
             return False
 
     def _modify_order_sl(self, ticket: int, new_sl: float) -> bool:
