@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from signal_parser import parse_signal, Signal
+from signal_validator import ema_value, rsi_wilder, atr_wilder
 
 try:
     import MetaTrader5 as mt5
@@ -53,6 +54,8 @@ class TradeOutcome:
     close_time: str = ""
     signal_time: str = ""
     leg: str = ""          # "1"/"2" for Brian dual-entry legs
+    filter_blocked: bool = False  # filter simulation: signal would be blocked
+    filter_reasons: str = ""      # failed filter names, ", "-joined
 
 
 @dataclass
@@ -77,6 +80,16 @@ class BacktestResult:
     last_signal: str = ""
     tp_note: str = ""
     results: list = field(default_factory=list)
+    # --- filter simulation (EMA200/RSI/ATR evaluated at signal time) ---
+    filter_sim: bool = False         # simulation ran (settings provided)
+    filter_blocked: int = 0          # trades the filters would have blocked
+    filter_blocked_tp: int = 0      # ...of those, how many hit TP (lost profit)
+    filter_blocked_sl: int = 0      # ...of those, how many hit SL (avoided loss)
+    filter_blocked_net: float = 0.0 # net pips of the blocked trades (neg = good to block)
+    filter_reason_counts: dict = field(default_factory=dict)  # filter name -> block count
+    kept_tp: int = 0                 # trades kept by the filters
+    kept_sl: int = 0
+    kept_net: float = 0.0            # net pips with filters ON
 
 
 class Backtester:
@@ -89,10 +102,12 @@ class Backtester:
     PIP = 0.1                     # 1 pip on XAUUSD in price units
     USD_PER_PIP = 0.10            # $ per pip per 0.01 lot on XAUUSD
 
-    def __init__(self, user_client, mt5_connector, logger: Optional[logging.Logger] = None):
+    def __init__(self, user_client, mt5_connector, logger: Optional[logging.Logger] = None,
+                 settings=None):
         self.user_client = user_client
         self.mt5 = mt5_connector
         self.logger = logger or logging.getLogger("xau_trader")
+        self.settings = settings  # enables the filter simulation when present
 
     # ------------------------------------------------------------------
     # Signal collection
@@ -226,6 +241,127 @@ class Backtester:
             tp2 = max(tps[1], cap) if len(tps) >= 2 else cap
             closer, farther = (e1, e2) if e1 <= e2 else (e2, e1)
         return (closer, tp1), (farther, tp2)
+
+    # ------------------------------------------------------------------
+    # Filter simulation (EMA200 / RSI / ATR evaluated at signal time)
+    # ------------------------------------------------------------------
+    TF_SECONDS = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+                  "H1": 3600, "H4": 14400, "D1": 86400}
+    FILTER_BARS = {"H1": 260, "M15": 320}  # bars fetched before the signal
+
+    def _completed_bars(self, symbol: str, tf_name: str, signal_epoch: float):
+        """Bars of tf_name that fully closed before signal_epoch (oldest->newest),
+        or None. Mirrors the live validator (which drops the forming bar)."""
+        try:
+            if mt5 is None:
+                return None
+            tf = getattr(mt5, f"TIMEFRAME_{tf_name}", None)
+            if tf is None:
+                return None
+            secs = self.TF_SECONDS[tf_name]
+            count = self.FILTER_BARS.get(tf_name, 260)
+            to = datetime.fromtimestamp(signal_epoch, tz=timezone.utc)
+            frm = datetime.fromtimestamp(signal_epoch - (count + 5) * secs, tz=timezone.utc)
+            rates = mt5.copy_rates_range(symbol, tf, frm, to)
+            if rates is None or len(rates) == 0:
+                return None
+            done = [r for r in rates if r["time"] + secs <= signal_epoch]
+            if len(done) < 30:
+                return None
+            return done
+        except Exception as e:
+            self.logger.warning(f"Filter-sim bar fetch failed ({symbol} {tf_name}): {e}")
+            return None
+
+    def _filter_failures(self, sig: Signal, signal_epoch: float):
+        """Evaluate the live signal filters AS OF the signal time.
+
+        Returns None when simulation is unavailable (no settings / channel has
+        filters off entirely), otherwise a list of (name, detail) failures.
+        Every check FAILS OPEN on missing data, exactly like live trading —
+        a data gap never counts as a block.
+        """
+        if not self.settings:
+            return None
+        try:
+            if self.settings.channel_filters_disabled(sig.source_channel):
+                return []
+        except Exception:
+            return None
+        fails = []
+        for fname, runner in (
+            ("ema200", self._flt_ema200),
+            ("rsi", self._flt_rsi),
+            ("atr_sl", self._flt_atr_sl),
+        ):
+            try:
+                cfg = self.settings.filter_config_for_channel(sig.source_channel, fname)
+            except Exception:
+                cfg = None
+            if not cfg or not cfg.get("enabled", True):
+                continue
+            detail = runner(cfg, sig, signal_epoch)
+            if detail:
+                fails.append((fname, detail))
+        return fails
+
+    def _flt_ema200(self, cfg: dict, sig: Signal, signal_epoch: float):
+        bars = self._completed_bars(sig.symbol, str(cfg.get("timeframe", "H1")).upper(),
+                                    signal_epoch)
+        if bars is None or len(bars) < 201:
+            return None  # fail-open
+        closes = [float(r["close"]) for r in bars]
+        highs = [float(r["high"]) for r in bars]
+        lows = [float(r["low"]) for r in bars]
+        ema = ema_value(closes, 200)
+        if ema is None:
+            return None
+        atr = atr_wilder(highs, lows, closes, 14)
+        price = closes[-1]  # close of the last completed bar ~ signal price
+        atr_val = atr if atr and atr > 0 else abs(price) * 0.001
+        buffer = float(cfg.get("buffer_atr_mult", 0.3)) * atr_val
+        diff = price - ema
+        d = sig.direction.upper()
+        if d == "BUY" and diff < -buffer:
+            return f"price {price:.2f} below EMA200 {ema:.2f} (downtrend)"
+        if d == "SELL" and diff > buffer:
+            return f"price {price:.2f} above EMA200 {ema:.2f} (uptrend)"
+        return None
+
+    def _flt_rsi(self, cfg: dict, sig: Signal, signal_epoch: float):
+        period = int(cfg.get("period", 14))
+        bars = self._completed_bars(sig.symbol, str(cfg.get("timeframe", "M15")).upper(),
+                                    signal_epoch)
+        if bars is None:
+            return None
+        rsi = rsi_wilder([float(r["close"]) for r in bars], period)
+        if rsi is None:
+            return None
+        buy_max = float(cfg.get("buy_max", 75))
+        sell_min = float(cfg.get("sell_min", 25))
+        d = sig.direction.upper()
+        if d == "BUY" and rsi >= buy_max:
+            return f"RSI {rsi:.1f} >= {buy_max} (overbought)"
+        if d == "SELL" and rsi <= sell_min:
+            return f"RSI {rsi:.1f} <= {sell_min} (oversold)"
+        return None
+
+    def _flt_atr_sl(self, cfg: dict, sig: Signal, signal_epoch: float):
+        period = int(cfg.get("period", 14))
+        bars = self._completed_bars(sig.symbol, str(cfg.get("timeframe", "M15")).upper(),
+                                    signal_epoch)
+        if bars is None:
+            return None
+        atr = atr_wilder([float(r["high"]) for r in bars],
+                         [float(r["low"]) for r in bars],
+                         [float(r["close"]) for r in bars], period)
+        if not atr or atr <= 0:
+            return None
+        floor = float(cfg.get("min_sl_atr_mult", 0.5)) * atr
+        dist = abs(float(sig.entry) - float(sig.stop_loss))
+        if dist < floor:
+            return f"SL {dist:.2f} inside noise floor {floor:.2f}"
+        return None
 
     # ------------------------------------------------------------------
     # Simulation
@@ -418,6 +554,15 @@ class Backtester:
             signal_epoch = item["date"].timestamp() + offset
             out_tp = self._channel_tp_index(sig.source_channel, len(sig.take_profits))
 
+            # Filter simulation: evaluate on the RAW signal, before channel
+            # adjustments — exactly where the live validator runs. A signal is
+            # "blocked" if any enabled filter would have rejected it.
+            flt_fails = self._filter_failures(sig, signal_epoch)
+            if flt_fails is not None:
+                result.filter_sim = True
+            flt_reasons = ", ".join(n for n, _ in flt_fails) if flt_fails else ""
+            flt_blocked = bool(flt_fails)
+
             end_epoch = signal_epoch + (self.ENTRY_WINDOW_MIN * 60 + self.TP_SL_WINDOW_HOURS * 3600) + 300
             rates = self._get_rates(sig.symbol, signal_epoch - 300, end_epoch)
 
@@ -427,7 +572,8 @@ class Backtester:
                 result.trades += 1
                 result.results.append(TradeOutcome(
                     direction=sig.direction, entry=sig.entry, tp=0.0,
-                    sl=sig.stop_loss, status="no_data", signal_time=stamp))
+                    sl=sig.stop_loss, status="no_data", signal_time=stamp,
+                    filter_blocked=flt_blocked, filter_reasons=flt_reasons))
                 continue
 
             self._apply_channel_adjustments(sig, rates, signal_epoch)
@@ -445,6 +591,8 @@ class Backtester:
 
             for o in outcomes:
                 o.signal_time = stamp
+                o.filter_blocked = flt_blocked
+                o.filter_reasons = flt_reasons
                 result.results.append(o)
                 result.trades += 1
                 if o.status == "tp_hit":
@@ -468,6 +616,30 @@ class Backtester:
         rr_list = [o.rr for o in result.results if o.rr > 0]
         if rr_list:
             result.avg_rr = sum(rr_list) / len(rr_list)
+
+        # --- Filter-simulation aggregation ---
+        if result.filter_sim:
+            for o in result.results:
+                if o.filter_blocked:
+                    result.filter_blocked += 1
+                    if o.status == "tp_hit":
+                        result.filter_blocked_tp += 1
+                        result.filter_blocked_net += o.profit_pips
+                    elif o.status == "sl_hit":
+                        result.filter_blocked_sl += 1
+                        result.filter_blocked_net += o.profit_pips
+                    for rn in (r.strip() for r in o.filter_reasons.split(",")):
+                        if rn:
+                            result.filter_reason_counts[rn] = (
+                                result.filter_reason_counts.get(rn, 0) + 1
+                            )
+                else:
+                    if o.status == "tp_hit":
+                        result.kept_tp += 1
+                        result.kept_net += o.profit_pips
+                    elif o.status == "sl_hit":
+                        result.kept_sl += 1
+                        result.kept_net += o.profit_pips
         return result
 
     def _tp_note(self, channel_id: str) -> str:
@@ -503,6 +675,37 @@ class Backtester:
             f"💵 Est. profit @ 0.01 lot: {sign}${result.est_profit_usd:.2f} (normal mode, no 248)",
         ]
 
+        # --- Filter-simulation section ---
+        if result.filter_sim:
+            pct = (result.filter_blocked / result.trades * 100) if result.trades else 0.0
+            kept_closed = result.kept_tp + result.kept_sl
+            kept_wr = (result.kept_tp / kept_closed * 100) if kept_closed else 0.0
+            b_sign = "+" if result.filter_blocked_net >= 0 else ""
+            k_sign = "+" if result.kept_net >= 0 else ""
+            reasons = ", ".join(
+                f"{k} {v}"
+                for k, v in sorted(result.filter_reason_counts.items(), key=lambda kv: -kv[1])
+            )
+            if result.filter_blocked_net < 0:
+                verdict = (f"✅ Filters HELP this channel: the blocked trades lost "
+                           f"{abs(result.filter_blocked_net):.0f} pips overall")
+            elif result.filter_blocked_net > 0:
+                verdict = (f"⚠️ Filters HURT this channel: the blocked trades were "
+                           f"net profitable ({result.filter_blocked_net:+.0f} pips)")
+            else:
+                verdict = "➖ Filters neutral here: blocked trades net 0 pips"
+            lines += [
+                "",
+                "🧪 Filter simulation (EMA200/RSI/ATR evaluated at signal time):",
+                f"Would block {result.filter_blocked}/{result.trades} trades ({pct:.0f}%)",
+                f"  Blocked: {result.filter_blocked_tp} TP / {result.filter_blocked_sl} SL "
+                f"— net {b_sign}{result.filter_blocked_net:.0f} pips",
+                f"  With filters ON: winrate {result.winrate:.1f}% → {kept_wr:.1f}%, "
+                f"net {win_sign}{result.net_pips:.0f} → {k_sign}{result.kept_net:.0f} pips",
+                f"  Reasons: {reasons or 'none'}",
+                f"  {verdict}",
+            ]
+
         recent = result.results[-15:]
         if recent:
             lines.append("\n--- Last 15 trades ---")
@@ -526,8 +729,9 @@ class Backtester:
                     icon = "⚪"
                     detail = "not filled"
                 leg = f" L{r.leg}" if r.leg else ""
+                blk = " 🧪filtered" if r.filter_blocked else ""
                 lines.append(
-                    f"{icon} {r.signal_time} {r.direction}{leg} E={r.entry:g} RR=1:{r.rr:.1f} -> {detail}"
+                    f"{icon} {r.signal_time} {r.direction}{leg} E={r.entry:g} RR=1:{r.rr:.1f} -> {detail}{blk}"
                 )
 
         text = "\n".join(lines)

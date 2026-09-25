@@ -526,7 +526,9 @@ class CommandHandler:
         lines = [
             "📊 Backtest — replays up to the last 500 signals against M1 price data\n",
             "Uses each channel's live trading rules (TP, entry/SL adjustments).\n"
-            "Reports winrate + estimated profit @ 0.01 lot (normal mode, no 248).\n\n"
+            "Reports winrate + estimated profit @ 0.01 lot (normal mode, no 248),\n"
+            "plus 🧪 filter simulation: how many trades the EMA200/RSI/ATR filters\n"
+            "would block and whether that helps or hurts profit.\n\n"
             "Select a channel:\n\n",
         ]
         for i, ch in enumerate(channels, 1):
@@ -545,6 +547,7 @@ class CommandHandler:
                 user_client=self.tg_user_client,
                 mt5_connector=self.mt5,
                 logger=self.logger,
+                settings=self.settings,
             )
             self.logger.info(f"Backtest started: {channel_id} (up to 500 signals)")
             result = await backtester.run_backtest(channel_id=channel_id, fmt=fmt)
