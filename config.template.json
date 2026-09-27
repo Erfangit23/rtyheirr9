@@ -1,0 +1,99 @@
+{
+  "_راهنما": "این فایل نمونه‌ی توضیح‌دار config.json است. مقادیر واقعی خودت را جایگزین کن، نامش را به config.json تغییر بده و کنار main.py بگذار. کلیدهای _comment فقط توضیح‌اند و بات آن‌ها را نادیده می‌گیرد (ساختار دقیقاً مثل config.json است، پس کپی‌کردنش بی‌خطر است).",
+
+  "_فرمت‌ها": {
+    "format1": "📊XAUUSD SELL NOW ( 4167 )  +  📊TARGET 1 ( 4163 )  +  🚫 STOP LOSS ( 4177 )",
+    "format2": "XAUUSD SELL NOW 4171:::4180  +  ✔️ Tp1 🔽 4166  +  ❌ SL 4186",
+    "format3": "XAUUSD Sell 4064  +  TP 4059  +  SL 4074   (ساده و بدون ایموجی)",
+    "format4": "🧑‍💻 XAU/USD Buy 4063 - 4060  +  📌 Stoploss : 4057  +  Take Profit : 4068   (دو ورودی)",
+    "format5": "XAUUSD ( اسکلپ )  +  Buy now : 4090 - 4086  +  Tp1 : 4096  +  Sl : 4080",
+    "format6": "⚜️ XAUUSD - BUY NOW  +  🛒 Entry : 4081  +  🎯 Targets :  +  🔺 Stoploss : 4076",
+    "format7": "XAUUSD | SELL 📈  +  Entry : 4043  +  ✔️TP1: 4039  +  ❌SL : 4052",
+    "format8": "GOLD Buy Limit 4252-4253  +  TP 4259  +  SL 4246   (محدوده‌ی ورود)",
+    "auto": "اگر فرمت کانال را نمی‌دانی auto بگذار — بات همه‌ی پارسرها را به ترتیب امتحان می‌کند"
+  },
+
+  "telegram": {
+    "_comment": "اکانت شخصی تلگرام خودت (نه بات). api_id و api_hash را از my.telegram.org/apps بگیر. بار اول که اجرا کنی کد ورود می‌خواهد و یک فایل session می‌سازد که دفعه‌های بعد استفاده می‌شود.",
+    "api_id": 1234567,
+    "api_hash": "your_api_hash_here",
+    "phone": "+989123456789",
+    "session_name": "trader_session"
+  },
+
+  "report_bot": {
+    "_comment": "باتی که گزارش می‌فرستد و دستورها را می‌گیرد. bot_token از @BotFather و authorized_user_ids = آی‌دی عددی خودت از @userinfobot. فقط این آی‌دی‌ها می‌توانند بات را کنترل کنند، پس فقط خودت را بگذار.",
+    "bot_token": "123456:ABC-DEF_your_bot_token",
+    "authorized_user_ids": [123456789]
+  },
+
+  "mt5": {
+    "_comment": "اطلاعات اکانت متاتریدر ۵. server را مو‌به‌مو از پنجره‌ی لاگین MT5 کپی کن. symbol باید دقیقاً همان نام طلا در بروکر تو باشد (مثلاً XAUUSD یا XAUUSD.pro یا GOLD) وگرنه بات هیچ پوزیشن بازی را نمی‌بیند. terminal_path اگر MT5 در مسیر پیش‌فرض نصب است خالی بگذار.",
+    "login": 12345678,
+    "password": "your_mt5_password",
+    "server": "YourBroker-Server",
+    "terminal_path": "",
+    "symbol": "XAUUSD"
+  },
+
+  "channels": [
+    {
+      "_comment": "id = یوزرنیم کانال با @ (اکانت تلگرامت باید عضوش باشد) | format = فرمت پیام‌های آن کانال از جدول بالای فایل | دو کلید اختیاری: \"active\": false برای خاموش کردن موقت کانال، \"filters\": false برای خاموش کردن فیلترها فقط برای همین کانال",
+      "id": "@gold_alicxzos110",
+      "format": "format1"
+    },
+    { "id": "@Xsd_Gold_SignaIs1",  "format": "format2" },
+    { "id": "@bttesteamin",        "format": "format8" },
+    { "id": "@Gulljanali17",       "format": "format3" },
+    { "id": "@GoLDVipSigbal",      "format": "format3" },
+    { "id": "@BrianTradingForex",  "format": "format4" },
+    { "id": "@forexkhan",          "format": "format5" },
+    { "id": "@khanbouse",          "format": "format5" },
+    { "id": "@Signal_Atlas",       "format": "format6" },
+    { "id": "@GoldVisionofficial", "format": "format7" },
+    { "id": "@Eliz_fxac_ademy1",   "format": "format8" }
+  ],
+
+  "trading": {
+    "_comment": "تنظیمات معامله. همه‌ی این‌ها را می‌توانی از تلگرام هم عوض کنی: /change + پسورد، بعد lot / tp / maxsl / dailysl / maxtrades / sleep / wake.",
+    "_lot_size": "حجم پایه‌ی هر معامله (۰.۰۱ یعنی هر ۱۰ پیپ = ۱ دلار)",
+    "_default_tp_index": "تی‌پی پیش‌فرض برای کانال‌هایی که قانون مخصوص ندارند",
+    "_max_sl_pips": "اگر فاصله‌ی حد ضرر سیگنال از این بیشتر باشد، سفارش ثبت نمی‌شود",
+    "_max_daily_sl_pips": "سقف ضرر روزانه؛ با رسیدن به این عدد معامله‌ی جدید تا فردا بسته می‌شود (۰ = بی‌نهایت)",
+    "_max_open_trades": "حداکثر معامله‌ی هم‌زمان روی طلا (۰ = بی‌نهایت)",
+    "_bot_active": "false یعنی بات بخوابد و هیچ سیگنالی اجرا نشود",
+    "_settings_password": "پسورد تغییر تنظیمات از تلگرام — حتماً عوضش کن",
+    "lot_size": 0.01,
+    "default_tp_index": 2,
+    "max_sl_pips": 150,
+    "max_daily_sl_pips": 500,
+    "max_open_trades": 5,
+    "bot_active": true,
+    "settings_password": "Amin123"
+  },
+
+  "validation": {
+    "_comment": "فیلترهای کیفیت سیگنال. mode: off = خاموش | dry_run = فقط گزارش بده و معامله را انجام بده (پیشنهادی) | on = واقعاً بلاک کن. با /backtest ببین هر کدام به نفع یا ضرر کانال است.",
+    "mode": "dry_run",
+    "ema200": {
+      "enabled": true,
+      "timeframe": "H1",
+      "buffer_atr_mult": 0.3,
+      "ext_guard": false,
+      "ext_guard_atr_mult": 2.5
+    },
+    "rsi": {
+      "enabled": true,
+      "timeframe": "M15",
+      "period": 14,
+      "buy_max": 75,
+      "sell_min": 25
+    },
+    "atr_sl": {
+      "enabled": true,
+      "timeframe": "M15",
+      "period": 14,
+      "min_sl_atr_mult": 0.5
+    }
+  }
+}
