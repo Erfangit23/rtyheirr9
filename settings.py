@@ -135,6 +135,17 @@ class Settings:
     def ai_mode(self) -> bool:
         return self.trading.get("ai_mode", False)
 
+    @property
+    def ai_api_key(self) -> str:
+        """NVIDIA API key for AI parsing/commentary.
+
+        Comes from config.json ("ai": {"api_key": "..."}) or the
+        NVIDIA_API_KEY environment variable. Never hardcoded in the source,
+        so the repo stays safe to publish.
+        """
+        return ((self._data.get("ai", {}) or {}).get("api_key")
+                or os.environ.get("NVIDIA_API_KEY", "")).strip()
+
     def set_ai_mode(self, value: bool):
         with self._lock:
             self._data.setdefault("trading", {})["ai_mode"] = value

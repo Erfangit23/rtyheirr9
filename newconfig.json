@@ -7,14 +7,11 @@
   },
   "report_bot": {
     "bot_token": "",
-    "authorized_user_ids": [
-      0,
-      0
-    ]
+    "authorized_user_ids": []
   },
   "mt5": {
     "login": 0,
-    "password": "REMOVED",
+    "password": "",
     "server": "MetaQuotes-Demo",
     "terminal_path": "",
     "symbol": "XAUUSD"

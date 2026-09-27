@@ -226,7 +226,10 @@ class TelegramManager:
             if use_ai:
                 # Try AI parser first (for cancel/modify detection on all channels)
                 if not hasattr(self, '_ai_parser'):
-                    self._ai_parser = AIParser(logger=self.logger)
+                    self._ai_parser = AIParser(
+                        logger=self.logger,
+                        api_key=self.settings.ai_api_key if self.settings else None,
+                    )
 
                 if self._ai_parser.is_available():
                     # For regex-only channels, still check for cancel/modify via AI

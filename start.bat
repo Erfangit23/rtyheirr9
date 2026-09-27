@@ -8,6 +8,8 @@ if exist "venv\Scripts\activate.bat" (
 )
 
 :loop
+REM Optional: AI parsing/commentary key (or put "ai": {"api_key": "..."} in config.json)
+REM set NVIDIA_API_KEY=nvapi-xxxxxxxxxxxxxxxx
 echo [%date% %time%] Starting XAU Trader Bot...
 python main.py
 echo [%date% %time%] Bot stopped with exit code %errorlevel%

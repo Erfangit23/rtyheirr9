@@ -1,6 +1,5 @@
 {
   "_راهنما": "این فایل نمونه‌ی توضیح‌دار config.json است. مقادیر واقعی خودت را جایگزین کن، نامش را به config.json تغییر بده و کنار main.py بگذار. کلیدهای _comment فقط توضیح‌اند و بات آن‌ها را نادیده می‌گیرد (ساختار دقیقاً مثل config.json است، پس کپی‌کردنش بی‌خطر است).",
-
   "_فرمت‌ها": {
     "format1": "📊XAUUSD SELL NOW ( 4167 )  +  📊TARGET 1 ( 4163 )  +  🚫 STOP LOSS ( 4177 )",
     "format2": "XAUUSD SELL NOW 4171:::4180  +  ✔️ Tp1 🔽 4166  +  ❌ SL 4186",
@@ -12,7 +11,6 @@
     "format8": "GOLD Buy Limit 4252-4253  +  TP 4259  +  SL 4246   (محدوده‌ی ورود)",
     "auto": "اگر فرمت کانال را نمی‌دانی auto بگذار — بات همه‌ی پارسرها را به ترتیب امتحان می‌کند"
   },
-
   "telegram": {
     "_comment": "اکانت شخصی تلگرام خودت (نه بات). api_id و api_hash را از my.telegram.org/apps بگیر. بار اول که اجرا کنی کد ورود می‌خواهد و یک فایل session می‌سازد که دفعه‌های بعد استفاده می‌شود.",
     "api_id": 1234567,
@@ -20,13 +18,13 @@
     "phone": "+989123456789",
     "session_name": "trader_session"
   },
-
   "report_bot": {
     "_comment": "باتی که گزارش می‌فرستد و دستورها را می‌گیرد. bot_token از @BotFather و authorized_user_ids = آی‌دی عددی خودت از @userinfobot. فقط این آی‌دی‌ها می‌توانند بات را کنترل کنند، پس فقط خودت را بگذار.",
     "bot_token": "123456:ABC-DEF_your_bot_token",
-    "authorized_user_ids": [123456789]
+    "authorized_user_ids": [
+      123456789
+    ]
   },
-
   "mt5": {
     "_comment": "اطلاعات اکانت متاتریدر ۵. server را مو‌به‌مو از پنجره‌ی لاگین MT5 کپی کن. symbol باید دقیقاً همان نام طلا در بروکر تو باشد (مثلاً XAUUSD یا XAUUSD.pro یا GOLD) وگرنه بات هیچ پوزیشن بازی را نمی‌بیند. terminal_path اگر MT5 در مسیر پیش‌فرض نصب است خالی بگذار.",
     "login": 12345678,
@@ -35,25 +33,57 @@
     "terminal_path": "",
     "symbol": "XAUUSD"
   },
-
+  "ai": {
+    "_comment": "کلید NVIDIA برای حالت AI (پارس هوشمند سیگنال و کامنت فارسی). این کلید هرگز داخل کد نیست؛ چون config.json در .gitignore است، اینجا امن است. می‌توانی به‌جایش متغیر محیطی NVIDIA_API_KEY را ست کنی.",
+    "api_key": "nvapi-xxxxxxxxxxxxxxxxxxxx"
+  },
   "channels": [
     {
       "_comment": "id = یوزرنیم کانال با @ (اکانت تلگرامت باید عضوش باشد) | format = فرمت پیام‌های آن کانال از جدول بالای فایل | دو کلید اختیاری: \"active\": false برای خاموش کردن موقت کانال، \"filters\": false برای خاموش کردن فیلترها فقط برای همین کانال",
       "id": "@gold_alicxzos110",
       "format": "format1"
     },
-    { "id": "@Xsd_Gold_SignaIs1",  "format": "format2" },
-    { "id": "@bttesteamin",        "format": "format8" },
-    { "id": "@Gulljanali17",       "format": "format3" },
-    { "id": "@GoLDVipSigbal",      "format": "format3" },
-    { "id": "@BrianTradingForex",  "format": "format4" },
-    { "id": "@forexkhan",          "format": "format5" },
-    { "id": "@khanbouse",          "format": "format5" },
-    { "id": "@Signal_Atlas",       "format": "format6" },
-    { "id": "@GoldVisionofficial", "format": "format7" },
-    { "id": "@Eliz_fxac_ademy1",   "format": "format8" }
+    {
+      "id": "@Xsd_Gold_SignaIs1",
+      "format": "format2"
+    },
+    {
+      "id": "@bttesteamin",
+      "format": "format8"
+    },
+    {
+      "id": "@Gulljanali17",
+      "format": "format3"
+    },
+    {
+      "id": "@GoLDVipSigbal",
+      "format": "format3"
+    },
+    {
+      "id": "@BrianTradingForex",
+      "format": "format4"
+    },
+    {
+      "id": "@forexkhan",
+      "format": "format5"
+    },
+    {
+      "id": "@khanbouse",
+      "format": "format5"
+    },
+    {
+      "id": "@Signal_Atlas",
+      "format": "format6"
+    },
+    {
+      "id": "@GoldVisionofficial",
+      "format": "format7"
+    },
+    {
+      "id": "@Eliz_fxac_ademy1",
+      "format": "format8"
+    }
   ],
-
   "trading": {
     "_comment": "تنظیمات معامله. همه‌ی این‌ها را می‌توانی از تلگرام هم عوض کنی: /change + پسورد، بعد lot / tp / maxsl / dailysl / maxtrades / sleep / wake.",
     "_lot_size": "حجم پایه‌ی هر معامله (۰.۰۱ یعنی هر ۱۰ پیپ = ۱ دلار)",
@@ -71,7 +101,6 @@
     "bot_active": true,
     "settings_password": "Amin123"
   },
-
   "validation": {
     "_comment": "فیلترهای کیفیت سیگنال. mode: off = خاموش | dry_run = فقط گزارش بده و معامله را انجام بده (پیشنهادی) | on = واقعاً بلاک کن. با /backtest ببین هر کدام به نفع یا ضرر کانال است.",
     "mode": "dry_run",

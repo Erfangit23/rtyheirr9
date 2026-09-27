@@ -12,6 +12,7 @@ Falls back to regex parsers on API failure or timeout.
 
 import json
 import logging
+import os
 import asyncio
 from typing import Optional
 from signal_parser import Signal, parse_signal as regex_parse
@@ -24,8 +25,11 @@ except ImportError:
 
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NVIDIA_API_KEY = "nvapi-REMOVED"
 NVIDIA_MODEL = "deepseek-ai/deepseek-v4-flash"
+# The API key is NEVER hardcoded in the source. Supply it either in
+# config.json ("ai": {"api_key": "nvapi-..."} — config.json is gitignored)
+# or through the NVIDIA_API_KEY environment variable.
+
 
 SYSTEM_PROMPT = """You are a precise XAUUSD (Gold) trading signal parser. Your job is to read messages from Telegram trading channels and extract structured data.
 
@@ -78,17 +82,22 @@ AI_TIMEOUT = 8
 class AIParser:
     """Parses Telegram messages using NVIDIA DeepSeek V4 Flash API."""
 
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(self, logger: Optional[logging.Logger] = None,
+                 api_key: Optional[str] = None):
         self.logger = logger or logging.getLogger("xau_trader")
         self.client = None
-        if OpenAI:
-            self.client = OpenAI(
-                base_url=NVIDIA_BASE_URL,
-                api_key=NVIDIA_API_KEY,
-            )
-            self.logger.info("AI Parser initialized with NVIDIA DeepSeek V4 Flash")
-        else:
+        key = (api_key or os.environ.get("NVIDIA_API_KEY", "")).strip()
+        if not OpenAI:
             self.logger.warning("OpenAI SDK not installed. AI parser unavailable.")
+        elif not key:
+            self.logger.warning(
+                "AI parser unavailable: no API key. Put it in config.json as "
+                '\"ai\": {\"api_key\": \"nvapi-...\"} or set the NVIDIA_API_KEY '
+                "environment variable. Falling back to regex parsing."
+            )
+        else:
+            self.client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
+            self.logger.info("AI Parser initialized with NVIDIA DeepSeek V4 Flash")
 
     def is_available(self) -> bool:
         """Check if AI parser is available."""

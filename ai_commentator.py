@@ -7,6 +7,7 @@ human-sounding message in Persian/Farsi.
 """
 
 import logging
+import os
 from typing import Optional
 
 try:
@@ -15,10 +16,10 @@ except ImportError:
     OpenAI = None
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-# NOTE: keep this identical to the key in ai_parser.py. A literal "…" here before
-# broke HTTP header encoding ("'ascii' codec can't encode character '\u2026'").
-NVIDIA_API_KEY = "nvapi-REMOVED"
 NVIDIA_MODEL = "deepseek-ai/deepseek-v4-flash"
+# The API key is NEVER hardcoded in the source (a literal "…" in an old key
+# also broke HTTP header encoding). Supply it in config.json
+# ("ai": {"api_key": "nvapi-..."}) or via the NVIDIA_API_KEY env var.
 
 COMMENTARY_SYSTEM_PROMPT = """تو یک دستیار معاملات طلا هستی که به فارسی و با لحن طبیعی و انسانی صحبت می‌کنی.
 
@@ -41,17 +42,21 @@ COMMENTARY_SYSTEM_PROMPT = """تو یک دستیار معاملات طلا هس�
 class AICommentator:
     """Generates human-like Persian trade commentary using AI."""
 
-    def __init__(self, logger: Optional[logging.Logger] = None):
+    def __init__(self, logger: Optional[logging.Logger] = None,
+                 api_key: Optional[str] = None):
         self.logger = logger or logging.getLogger("xau_trader")
         self.client = None
-        if OpenAI:
-            self.client = OpenAI(
-                base_url=NVIDIA_BASE_URL,
-                api_key=NVIDIA_API_KEY,
-            )
-            self.logger.info("AI Commentator initialized")
-        else:
+        key = (api_key or os.environ.get("NVIDIA_API_KEY", "")).strip()
+        if not OpenAI:
             self.logger.warning("OpenAI SDK not installed. AI commentary unavailable.")
+        elif not key:
+            self.logger.warning(
+                "AI commentary unavailable: no API key (config.json \"ai\".api_key "
+                "or NVIDIA_API_KEY env var)."
+            )
+        else:
+            self.client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=key)
+            self.logger.info("AI Commentator initialized")
 
     def is_available(self) -> bool:
         return self.client is not None

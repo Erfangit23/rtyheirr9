@@ -83,6 +83,21 @@ Automated Telegram-signal-to-MetaTrader5 trading bot for XAUUSD.
 
 On the first run, the bot will ask for a Telegram login code. Enter the code sent to your Telegram app. This only happens once — the session is saved for future runs.
 
+## AI Mode (optional)
+
+AI signal parsing and the Persian trade commentary need an NVIDIA API key.
+The key is **never stored in the source code** — provide it one of two ways:
+
+1. In `config.json` (gitignored, recommended):
+
+```json
+"ai": { "api_key": "nvapi-..." }
+```
+
+2. Or as an environment variable: `set NVIDIA_API_KEY=nvapi-...` (see `start.bat`).
+
+Without a key the bot simply falls back to the regex parsers — nothing breaks.
+
 ## Bot Commands (via Telegram report bot)
 
 | Command | Description |

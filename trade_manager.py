@@ -1745,7 +1745,10 @@ class TradeManager:
             return
         try:
             from ai_commentator import AICommentator
-            commentator = AICommentator(logger=self.logger)
+            commentator = AICommentator(
+                logger=self.logger,
+                api_key=self.settings.ai_api_key,
+            )
             if not commentator.is_available():
                 return
             import asyncio
