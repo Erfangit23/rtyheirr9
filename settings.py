@@ -15,9 +15,9 @@ class Settings:
     def __init__(self, config_path: str = "config.json", logger: Optional[logging.Logger] = None):
         self.config_path = config_path
         self.logger = logger or logging.getLogger("xau_trader")
-        # Reentrant lock: several methods (advance_248_step, reset_248_multiplier,
-        # set_channel_active) call self.save() while already holding the lock, and
-        # save() re-acquires it. A plain Lock deadlocks there; RLock allows it.
+        # Reentrant lock: several methods (set_channel_active, set_ai_mode,
+        # set_filter_enabled) call self.save() while already holding the lock,
+        # and save() re-acquires it. A plain Lock deadlocks there; RLock allows it.
         self._lock = threading.RLock()
         self._data: dict = {}
         self.load()
@@ -140,66 +140,16 @@ class Settings:
             self._data.setdefault("trading", {})["ai_mode"] = value
         self.save()
 
-    # --- 248 Mode (martingale lot doubling per channel on SL) ---
-    # Default sequence: 1, 2, 4, 8, 16, 32, 64, 128 (powers of 2)
-    DEFAULT_248_SEQ = [1, 2, 4, 8, 16, 32, 64, 128]
-    FIBO_248_SEQ = [1, 2, 3, 5, 8, 13, 21, 34]
-
-    # Channels that use Fibonacci sequence instead of doubling.
-    # Empty since 2026-08: @Gulljanali17 now uses the standard doubling
-    # sequence (1,2,4,8,...) like every other channel.
-    FIBO_CHANNELS = []
-
+    # --- Max concurrent open trades (account safety cap) ---
+    # 0 disables the cap. Counts open positions + pending orders on XAUUSD.
     @property
-    def mode_248(self) -> bool:
-        return self.trading.get("mode_248", False)
+    def max_open_trades(self) -> int:
+        return self.trading.get("max_open_trades", 5)
 
-    def set_mode_248(self, value: bool):
+    def set_max_open_trades(self, value: int):
         with self._lock:
-            self._data.setdefault("trading", {})["mode_248"] = value
-            if not value:
-                # Reset all channel steps when turning off
-                self._data.setdefault("trading", {}).pop("mode_248_channels", None)
+            self._data.setdefault("trading", {})["max_open_trades"] = value
         self.save()
-
-    @property
-    def mode_248_channels(self) -> dict:
-        """Returns {channel_id: step_index} for 248 mode."""
-        return self.trading.get("mode_248_channels", {})
-
-    def _get_248_sequence(self, channel_id: str) -> list:
-        """Get the lot sequence for a channel."""
-        if channel_id in self.FIBO_CHANNELS:
-            return self.FIBO_248_SEQ
-        return self.DEFAULT_248_SEQ
-
-    def get_248_multiplier(self, channel_id: str) -> float:
-        """Get current lot multiplier for a channel in 248 mode."""
-        if not self.mode_248:
-            return 1.0
-        step = self.mode_248_channels.get(channel_id, 0)
-        seq = self._get_248_sequence(channel_id)
-        if step >= len(seq):
-            return float(seq[-1])  # Cap at last value
-        return float(seq[step])
-
-    def advance_248_step(self, channel_id: str):
-        """Advance to next step in the sequence (after SL hit)."""
-        with self._lock:
-            channels = self._data.setdefault("trading", {}).setdefault("mode_248_channels", {})
-            current = channels.get(channel_id, 0)
-            seq = self._get_248_sequence(channel_id)
-            if current < len(seq) - 1:
-                channels[channel_id] = current + 1
-            # If already at max, stay there
-            self.save()
-
-    def reset_248_multiplier(self, channel_id: str):
-        """Reset step to 0 for a channel (after TP hit)."""
-        with self._lock:
-            channels = self._data.setdefault("trading", {}).setdefault("mode_248_channels", {})
-            channels[channel_id] = 0
-            self.save()
 
     # --- Signal validation filters (EMA200 / RSI / ATR SL floor) ---
     # Defaults are deliberately LENIENT so the filters rarely block; tune via
@@ -325,6 +275,7 @@ class Settings:
             "default_tp_index": t.get("default_tp_index", 2),
             "max_sl_pips": t.get("max_sl_pips", 150),
             "max_daily_sl_pips": t.get("max_daily_sl_pips", 500),
+            "max_open_trades": t.get("max_open_trades", 5),
             "bot_active": t.get("bot_active", True),
             "ai_mode": t.get("ai_mode", False),
         }

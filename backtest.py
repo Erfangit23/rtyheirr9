@@ -16,8 +16,7 @@ Fixes over v1:
     * @Gulljanali17 / @bttesteamin: entry +10 pips toward market, SL +20 pips
     * @BrianTradingForex: dual entry, TP adjustments, TP2 150-pip cap and
       breakeven on the farther leg after TP1
-- Estimated USD profit is for NORMAL mode at the base lot (0.01) — 248 is
-  intentionally NOT simulated.
+- Estimated USD profit is for the base lot (0.01).
 
 The MT5 outcome checks are synchronous; run_backtest yields to the event loop
 between signals so the bot stays responsive while a backtest runs.
@@ -672,7 +671,7 @@ class Backtester:
             f"📊 Avg RR: 1:{result.avg_rr:.2f}",
             f"💰 Net: {win_sign}{result.net_pips:.0f} pips "
             f"(profit +{result.gross_profit_pips:.0f} / loss -{result.gross_loss_pips:.0f})",
-            f"💵 Est. profit @ 0.01 lot: {sign}${result.est_profit_usd:.2f} (normal mode, no 248)",
+            f"💵 Est. profit @ 0.01 lot: {sign}${result.est_profit_usd:.2f}",
         ]
 
         # --- Filter-simulation section ---

@@ -133,6 +133,7 @@ After `/change`, enter password `Amin123`, then use:
 ## Safety Features
 
 - SL distance check (default max: 150 pips)
+- Max concurrent open trades cap (default: 5, `max_open_trades` in config; 0 = unlimited)
 - Daily SL limit tracking
 - Bot sleep/wake toggle
 - Password-protected settings changes

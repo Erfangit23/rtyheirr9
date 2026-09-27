@@ -7,7 +7,10 @@
   },
   "report_bot": {
     "bot_token": "",
-    "authorized_user_ids": [0, 0]
+    "authorized_user_ids": [
+      0,
+      0
+    ]
   },
   "mt5": {
     "login": 0,
@@ -43,6 +46,7 @@
     "default_tp_index": 2,
     "max_sl_pips": 150,
     "max_daily_sl_pips": 500,
+    "max_open_trades": 5,
     "bot_active": true,
     "settings_password": "Amin123"
   }

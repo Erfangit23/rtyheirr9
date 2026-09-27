@@ -74,9 +74,7 @@ class CommandHandler:
                 "/filtermode off|dry|on - Filter mode\n"
                 "/fema /frsi /fatr on|off [@channel] - Toggle a filter\n"
                 "/makeaion - Enable AI signal parsing\n"
-                "/makeaioff - Disable AI signal parsing\n"
-                "/248on - Enable 248 lot doubling mode\n"
-                "/248off - Disable 248 mode (reset)\n\n"
+                "/makeaioff - Disable AI signal parsing\n\n"
                 "🔐 To change settings, send:\n"
                 "/change - Start settings change flow\n\n"
                 "⚠️ Default password: Amin123"
@@ -111,53 +109,6 @@ class CommandHandler:
         if text.lower() == "/makeaioff":
             self.settings.set_ai_mode(False)
             return "⚙️ AI mode is now OFF. Signals will be parsed by regex parsers."
-
-        if text.lower() == "/248on":
-            self.settings.set_mode_248(True)
-            return (
-                "✳️ 248 mode is now ON\n"
-                "Lot sizes will double after each SL hit per channel.\n"
-                "Sequence: 0.01 → 0.02 → 0.04 → 0.08 → ...\n"
-                "Resets to base lot after TP hit."
-            )
-
-        if text.lower() == "/248off":
-            self.settings.set_mode_248(False)
-            return (
-                "⏹ 248 mode is now OFF\n"
-                "All channel lot multipliers reset to 1x.\n"
-                "Trading with base lot size."
-            )
-
-        if text.lower() == "/248status":
-            if not self.settings.mode_248:
-                return "248 mode is OFF. Send /248on to enable."
-            channels = self.settings.mode_248_channels
-            lines = [f"✳️ 248 Mode — ACTIVE\nBase lot: {self.settings.lot_size}\n"]
-            if not channels:
-                lines.append("All channels at step 0 (1x base lot). No SL hits yet.")
-            else:
-                for ch_id, step in channels.items():
-                    mult = self.settings.get_248_multiplier(ch_id)
-                    lot = round(self.settings.lot_size * mult, 2)
-                    seq_type = "Fibo" if ch_id in self.settings.FIBO_CHANNELS else "2x"
-                    lines.append(f"  {ch_id}: step={step} mult={mult}x lot={lot} [{seq_type}]")
-            return "\n".join(lines)
-
-        if text.lower() == "/248test":
-            if not self.settings.mode_248:
-                return "248 mode is OFF. Send /248on first, then /248test."
-            # Force a test multiplier on all channels
-            test_ch = self.settings.channels[0]["id"] if self.settings.channels else "@forexkhan"
-            self.settings.advance_248_step(test_ch)
-            mult = self.settings.get_248_multiplier(test_ch)
-            lot = round(self.settings.lot_size * mult, 2)
-            return (
-                f"🧪 248 TEST — forced SL on {test_ch}\n"
-                f"Multiplier: {mult}x\n"
-                f"Next lot for {test_ch}: {lot}\n"
-                f"Check /248status to verify."
-            )
 
         # --- Signal filter commands ---
         if text.lower() == "/filters":
@@ -201,9 +152,12 @@ class CommandHandler:
             )
 
         # --- Password handling ---
-        if user_id in self._awaiting_password:
+        # Only while actually AWAITING the password (state True). Once the user
+        # is authenticated the state is "authenticated" and commands must fall
+        # through to _handle_authed_command below — otherwise every settings
+        # command would be compared against the password and rejected.
+        if self._awaiting_password.get(user_id) is True:
             if text == self.settings.settings_password:
-                self._awaiting_password.pop(user_id)
                 self._awaiting_password[user_id] = "authenticated"
                 return (
                     "✅ Authenticated!\n\n"
@@ -212,11 +166,12 @@ class CommandHandler:
                     "2️⃣ tp <index> - Set TP index (1-7)\n"
                     "3️⃣ maxsl <pips> - Set max SL pips\n"
                     "4️⃣ dailysl <pips> - Set max daily SL pips\n"
-                    "5️⃣ sleep - Pause the bot\n"
-                    "6️⃣ wake - Resume the bot\n"
-                    "7️⃣ chan on <@channel> - Activate channel\n"
-                    "8️⃣ chan off <@channel> - Deactivate channel\n"
-                    "9️⃣ done - Finish settings change"
+                    "5️⃣ maxtrades <n> - Max simultaneous open trades\n"
+                    "6️⃣ sleep - Pause the bot\n"
+                    "7️⃣ wake - Resume the bot\n"
+                    "8️⃣ chan on <@channel> - Activate channel\n"
+                    "9️⃣ chan off <@channel> - Deactivate channel\n"
+                    "🔟 done - Finish settings change"
                 )
             else:
                 self._awaiting_password.pop(user_id)
@@ -277,6 +232,19 @@ class CommandHandler:
             except ValueError:
                 return "❌ Invalid number. Example: dailysl 600"
 
+        if parts[0] == "maxtrades" and len(parts) >= 2:
+            try:
+                val = int(parts[1])
+                if val < 0:
+                    return "❌ Max open trades cannot be negative."
+                if val == 0:
+                    self.settings.set_max_open_trades(0)
+                    return "✅ Max open trades cap DISABLED (unlimited concurrent trades)."
+                self.settings.set_max_open_trades(val)
+                return f"✅ Max simultaneous open trades set to {val}"
+            except ValueError:
+                return "❌ Invalid number. Example: maxtrades 5"
+
         if parts[0] == "sleep":
             self.settings.set_bot_active(False)
             return "💤 Bot is now SLEEPING. No new trades will be placed."
@@ -306,8 +274,8 @@ class CommandHandler:
 
         return (
             "Unknown command. Options:\n"
-            "lot <size> | tp <index> | maxsl <pips> | dailysl <pips> | sleep | wake | "
-            "chan on <@channel> | chan off <@channel> | done"
+            "lot <size> | tp <index> | maxsl <pips> | dailysl <pips> | maxtrades <n> | "
+            "sleep | wake | chan on <@channel> | chan off <@channel> | done"
         )
 
     def _cmd_status(self) -> str:
@@ -336,19 +304,18 @@ class CommandHandler:
 
     def _cmd_settings(self) -> str:
         p = self.settings.get_all_trading_params()
+        max_open = p['max_open_trades']
         return (
             f"⚙️ Current Settings\n\n"
             f"Lot Size: {p['lot_size']}\n"
             f"Default TP: TP{p['default_tp_index']}\n"
             f"Max SL (per trade): {p['max_sl_pips']} pips\n"
             f"Max SL (per day): {p['max_daily_sl_pips']} pips\n"
+            f"Max Open Trades: {max_open if max_open else 'unlimited'}\n"
             f"Bot Active: {'Yes' if p['bot_active'] else 'No'}\n"
             f"AI Mode: {'ON (DeepSeek V4 Flash)' if p['ai_mode'] else 'OFF (regex parsers)'}\n"
-            f"248 Mode: {'ON (lot doubling on SL)' if self.settings.mode_248 else 'OFF'}\n"
-            f"Base Lot: {self.settings.lot_size}\n"
             f"\nSend /change to modify (password required)\n"
-            f"Send /makeaion or /makeaioff to toggle AI mode\n"
-            f"Send /248on or /248off to toggle 248 mode"
+            f"Send /makeaion or /makeaioff to toggle AI mode"
         )
 
     def _cmd_trades(self) -> str:
@@ -526,7 +493,7 @@ class CommandHandler:
         lines = [
             "📊 Backtest — replays up to the last 500 signals against M1 price data\n",
             "Uses each channel's live trading rules (TP, entry/SL adjustments).\n"
-            "Reports winrate + estimated profit @ 0.01 lot (normal mode, no 248),\n"
+            "Reports winrate + estimated profit @ 0.01 lot,\n"
             "plus 🧪 filter simulation: how many trades the EMA200/RSI/ATR filters\n"
             "would block and whether that helps or hurts profit.\n\n"
             "Select a channel:\n\n",

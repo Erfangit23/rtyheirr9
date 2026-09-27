@@ -29,6 +29,7 @@ class TradeStatus(str, Enum):
     CANCELLED = "cancelled"      # Order cancelled
     REJECTED_SL = "rejected_sl"  # Rejected due to SL limit
     REJECTED_DAILY = "rejected_daily"  # Rejected due to daily SL limit
+    REJECTED_MAX_OPEN = "rejected_max_open"  # Skipped: max open trades cap
 
 
 @dataclass
@@ -48,8 +49,6 @@ class TradeRecord:
     tp2: float = 0.0  # TP2 price for cancellation logic
     all_tps: list = None  # All TP prices for step-up SL (gold_alicxzos110)
     sl_step: int = 0  # Current SL step reached (0=none, 1=TP1, 2=TP2, 3=TP3)
-    participates_248: bool = True  # False => flat base lot, doesn't drive the 248 multiplier
-                                   # (used for the bigger-RR leg of @BrianTradingForex dual entry)
 
     def __post_init__(self):
         if self.all_tps is None:
@@ -222,8 +221,8 @@ class TradeManager:
     def _register_sl_hit(self, channel: str, profit: Optional[float] = None):
         """Record the exact time a channel hit SL (starts the cooldown).
 
-        Independent of 248 mode. Breakeven closes (|profit| < $0.50) are not
-        treated as a real SL, mirroring the 248 guard.
+        Breakeven closes (|profit| < $0.50) are not treated as a real SL —
+        they are not a loss worth pausing the channel for.
         """
         if channel not in self.SL_COOLDOWN_CHANNELS:
             return
@@ -382,12 +381,49 @@ class TradeManager:
                 f"({len(signal.take_profits)}). Using TP{tp_index}."
             )
 
+        # --- Max concurrent open trades (account safety cap) ---
+        # Counts ALL open positions + pending orders on XAUUSD on this account
+        # (margin doesn't care whose order it is). A dual-entry signal needs
+        # 2 free slots. max_open_trades = 0 disables the cap.
+        max_open = self.settings.max_open_trades
+        needed = 2 if dual_entry else 1
+        open_now = self._open_trade_count()
+        if max_open and open_now + needed > max_open:
+            self.logger.warning(
+                f"Max open trades cap: {open_now} open, signal needs {needed}, "
+                f"cap {max_open} — rejecting signal from {signal.source_channel}"
+            )
+            record = TradeRecord(
+                ticket=0,
+                channel=signal.source_channel,
+                symbol=signal.symbol,
+                direction=signal.direction,
+                entry=signal.entry,
+                sl=signal.stop_loss,
+                tp=signal.take_profits[tp_index - 1] if signal.take_profits else 0,
+                tp_index=tp_index,
+                lot_size=self.settings.lot_size,
+                status=TradeStatus.REJECTED_MAX_OPEN.value,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                raw_signal=signal.raw_text[:200],
+            )
+            self.trades.append(record)
+            self._save_trades()
+            await self._report(
+                f"🛑 Signal SKIPPED — max open trades reached:\n"
+                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                f"Open now: {open_now}/{max_open}"
+                f" (a dual-entry signal needs 2 free slots)\n"
+                f"Source: {signal.source_channel}"
+            )
+            return
+
         # For @Gulljanali17 / @bttesteamin:
         #   1) Move entry 10 pips closer to market (fills sooner).
         #   2) Tighten SL 10 pips toward the original SL's side.
         # On a symmetric 100-pip signal: entry +10 pips makes TP $9, and the
         # 10-pip tighter SL keeps the SL distance at 10.0 -> $10 SL / $9 TP
-        # (the same $ ratio holds in 248: lot doubles, pip distances don't).
+        # (the $ ratio is independent of lot size: pip distances don't change).
         # SL is only ever tightened here, never widened. TP is not touched.
         if signal.source_channel in ("@Gulljanali17", "@bttesteamin"):
             pip = 0.1  # 1 pip in gold price units (10 pips = 1.0 price)
@@ -553,13 +589,7 @@ class TradeManager:
             # Place both orders
             from signal_parser import Signal as Sig
 
-            # Lot sizing per leg:
-            #  - "first"  = closer entry (TP1, smaller TP) -> follows 248 (doubles on SL)
-            #  - "second" = farther entry (TP2, bigger RR) -> flat base lot, OUT of 248
-            def _leg_lot(lbl):
-                if lbl == "first":
-                    return self._get_lot_size(signal.source_channel)
-                return self.settings.lot_size  # flat, no 248
+            leg_lot = self.settings.lot_size
 
             results = []
             for entry_val, tp_val, label in [
@@ -581,7 +611,7 @@ class TradeManager:
                 # SL-pip cap here so these signals aren't rejected as "SL too large".
                 ticket = self.mt5.place_limit_order(
                     signal=mod_signal,
-                    lot_size=_leg_lot(label),
+                    lot_size=leg_lot,
                     tp_index=1,  # Only 1 TP in the modified signal
                     max_sl_pips=10**9,  # effectively no cap (breakeven strategy)
                 )
@@ -615,8 +645,7 @@ class TradeManager:
                         sl=signal.stop_loss,
                         tp=tp_val,
                         tp_index=1,
-                        lot_size=_leg_lot(label),
-                        participates_248=(label == "first"),
+                        lot_size=leg_lot,
                         status=TradeStatus.REJECTED_SL.value,
                         timestamp=now,
                         raw_signal=signal.raw_text[:200],
@@ -658,8 +687,7 @@ class TradeManager:
                         sl=signal.stop_loss,
                         tp=tp_val,
                         tp_index=1,
-                        lot_size=_leg_lot(label),
-                        participates_248=(label == "first"),
+                        lot_size=leg_lot,
                         status=TradeStatus.REJECTED_SL.value,
                         timestamp=now,
                         raw_signal=signal.raw_text[:200],
@@ -682,8 +710,7 @@ class TradeManager:
                         sl=signal.stop_loss,
                         tp=tp_val,
                         tp_index=1,
-                        lot_size=_leg_lot(label),
-                        participates_248=(label == "first"),
+                        lot_size=leg_lot,
                         status=TradeStatus.CANCELLED.value,
                         timestamp=now,
                         raw_signal=signal.raw_text[:200],
@@ -702,17 +729,16 @@ class TradeManager:
                     sl=signal.stop_loss,
                     tp=tp_val,
                     tp_index=1,
-                    lot_size=_leg_lot(label),
-                    participates_248=(label == "first"),
+                    lot_size=leg_lot,
                     status=TradeStatus.PENDING.value,
                     timestamp=now,
                     raw_signal=signal.raw_text[:200],
                     tp2=signal.take_profits[1] if len(signal.take_profits) >= 2 else 0,
                 )
                 self.trades.append(record)
-                order_desc = "closer, TP1, 248" if label == "first" else "farther, TP2, flat 0.01"
+                order_desc = "closer, fills first" if label == "first" else "farther, TP2"
                 report_lines.append(
-                    f"  #{ticket} [{label}] Entry @ {entry_val} TP @ {tp_val} lot {_leg_lot(label)} ({order_desc})"
+                    f"  #{ticket} [{label}] Entry @ {entry_val} TP @ {tp_val} lot {leg_lot} ({order_desc})"
                 )
 
             # Link orders for breakeven: when first order hits TP, move second order SL to its entry
@@ -730,8 +756,7 @@ class TradeManager:
             raw_tp2 = signal.take_profits[1] if len(signal.take_profits) >= 2 else tp2_price
             report_lines.append(
                 f"SL: {signal.stop_loss}\n"
-                f"Lot: closer(TP1)={self._get_lot_size(signal.source_channel)} [248] | "
-                f"farther(TP2)={self.settings.lot_size} [flat 0.01]\n"
+                f"Lot: {leg_lot} per leg\n"
                 f"Entries pulled 5 pips closer to market (fill sooner)\n"
                 f"Cancel rule: if price reaches TP2 ({raw_tp2}) without filling, both orders cancel\n"
                 f"When first order hits TP1, second order SL moves to entry (risk-free)"
@@ -742,7 +767,7 @@ class TradeManager:
         # Place the limit order
         ticket = self.mt5.place_limit_order(
             signal=signal,
-            lot_size=self._get_lot_size(signal.source_channel),
+            lot_size=self.settings.lot_size,
             tp_index=tp_index,
             max_sl_pips=self.settings.max_sl_pips,
         )
@@ -786,7 +811,7 @@ class TradeManager:
                 sl=signal.stop_loss,
                 tp=signal.take_profits[tp_index - 1] if signal.take_profits else 0,
                 tp_index=tp_index,
-                lot_size=self._get_lot_size(signal.source_channel),
+                lot_size=self.settings.lot_size,
                 status=TradeStatus.REJECTED_SL.value,
                 timestamp=now,
                 raw_signal=signal.raw_text[:200],
@@ -831,7 +856,7 @@ class TradeManager:
             sl=signal.stop_loss,
             tp=signal.take_profits[tp_index - 1] if signal.take_profits else 0,
             tp_index=tp_index,
-            lot_size=self._get_lot_size(signal.source_channel),
+            lot_size=self.settings.lot_size,
             status=TradeStatus.PENDING.value,
             timestamp=now,
             raw_signal=signal.raw_text[:200],
@@ -842,19 +867,15 @@ class TradeManager:
         self._save_trades()
 
         # Build report
-        actual_lot = self._get_lot_size(signal.source_channel)
         report_msg = (
             f"✅ Limit order placed:\n"
             f"#{ticket} {signal.direction} {signal.symbol}\n"
             f"Entry: {signal.entry}\n"
             f"SL: {signal.stop_loss}\n"
             f"TP: {signal.take_profits[tp_index-1]} (TP{tp_index})\n"
-            f"Lot: {actual_lot}"
+            f"Lot: {self.settings.lot_size}\n"
+            f"Source: {signal.source_channel}"
         )
-        if self.settings.mode_248 and actual_lot != self.settings.lot_size:
-            mult = self.settings.get_248_multiplier(signal.source_channel)
-            report_msg += f" (248: {self.settings.lot_size} x{mult})"
-        report_msg += f"\nSource: {signal.source_channel}"
         if signal.source_channel in ("@gold_alicxzos110", "@GoldVisionofficial") and len(signal.take_profits) >= 3:
             if signal.source_channel == "@gold_alicxzos110" and len(signal.take_profits) >= 4:
                 report_msg += (
@@ -974,10 +995,8 @@ class TradeManager:
                     if deal_info:
                         if deal_info["profit"] > 0:
                             trade.status = TradeStatus.TP_HIT.value
-                            self._on_tp_hit(trade.channel)
                         else:
                             trade.status = TradeStatus.SL_HIT.value
-                            self._on_sl_hit(trade.channel, deal_info["profit"])
                         updated = True
                         self.logger.info(
                             f"Position #{trade.ticket} closed (profit={deal_info['profit']:.2f}), "
@@ -1059,10 +1078,8 @@ class TradeManager:
                     if deal_info:
                         if deal_info["profit"] > 0:
                             trade.status = TradeStatus.TP_HIT.value
-                            self._on_tp_hit(trade.channel)
                         else:
                             trade.status = TradeStatus.SL_HIT.value
-                            self._on_sl_hit(trade.channel, deal_info["profit"])
                     else:
                         trade.status = TradeStatus.CANCELLED.value
                     updated = True
@@ -1115,12 +1132,9 @@ class TradeManager:
                             )
 
             # --- Closure detection for ALL filled positions ---
-            # This is the engine behind the 248 lot-doubling: every filled
-            # position is watched until it closes (TP or SL), at which point
-            # _on_tp_hit / _on_sl_hit adjust the per-channel lot multiplier.
-            # Previously only the two step-up channels were monitored here, so
-            # SL hits on every other channel (incl. @Gulljanali17 fibo) were
-            # never detected and the lot never doubled.
+            # Every filled position is watched until it closes (TP or SL),
+            # so statuses, reports and the per-channel SL cooldown stay
+            # accurate for every channel (not just the step-up ones).
             if trade.status == TradeStatus.FILLED.value:
                 if trade.ticket not in position_tickets:
                     await self._handle_filled_closure(trade)
@@ -1196,19 +1210,13 @@ class TradeManager:
                 # If no position match, the trade is really closed — check deal history
                 deal_info = self._check_deal_history(trade.ticket)
                 if deal_info:
-                    # Only the participating leg drives the 248 multiplier.
-                    participates = getattr(trade, "participates_248", True)
                     if deal_info["profit"] > 0:
                         trade.status = TradeStatus.TP_HIT.value
                         status_emoji = "🎯 TP HIT"
-                        if participates:
-                            self._on_tp_hit(trade.channel)
                     else:
                         trade.status = TradeStatus.SL_HIT.value
                         status_emoji = "🛑 SL HIT"
                         self._register_sl_hit(trade.channel, deal_info["profit"])
-                        if participates:
-                            self._on_sl_hit(trade.channel, deal_info["profit"])
 
                     await self._report(
                         f"{status_emoji}:\n"
@@ -1217,14 +1225,6 @@ class TradeManager:
                         f"Profit: {deal_info['profit']:.2f} USD\n"
                         f"Source: {trade.channel}"
                     )
-                    if self.settings.mode_248:
-                        if deal_info["profit"] > 0:
-                            report_248 = f"\n✳️ 248: {trade.channel} TP hit — lot reset to {self.settings.lot_size}"
-                        else:
-                            next_mult = self.settings.get_248_multiplier(trade.channel)
-                            next_lot = round(self.settings.lot_size * next_mult, 2)
-                            report_248 = f"\n✳️ 248: {trade.channel} SL hit — next lot will be {next_lot} (x{next_mult})"
-                        await self._report(report_248)
                     updated = True
 
                     # AI commentary
@@ -1501,85 +1501,47 @@ class TradeManager:
                 s["total_profit"] += profit
             elif trade.status == TradeStatus.CANCELLED.value:
                 s["cancelled"] += 1
-            elif trade.status == TradeStatus.REJECTED_SL.value:
+            elif trade.status in (TradeStatus.REJECTED_SL.value,
+                                  TradeStatus.REJECTED_MAX_OPEN.value):
                 s["rejected"] += 1
 
         return stats
 
-    def _get_lot_size(self, channel: str) -> float:
-        """Get lot size for a channel, applying 248 mode multiplier if active."""
-        base_lot = self.settings.lot_size
-        if not self.settings.mode_248:
-            self.logger.debug(f"_get_lot_size: 248 OFF, base_lot={base_lot}")
-            return base_lot
-        multiplier = self.settings.get_248_multiplier(channel)
-        lot = base_lot * multiplier
-        # Round to 2 decimal places to avoid MT5 rejection
-        lot = round(lot, 2)
-        if lot < 0.01:
-            lot = 0.01  # MT5 minimum
-        self.logger.info(
-            f"248 mode: {channel} lot={lot} (base={base_lot} x{multiplier})"
-        )
-        return lot
+    def _open_trade_count(self) -> int:
+        """Current open exposure on the account: open positions + pending
+        orders for XAUUSD.
 
-    def _on_sl_hit(self, channel: str, profit: float = None):
-        """Called when a trade hits SL — double the lot for next trade on this channel.
-        
-        If profit is close to 0 (breakeven close), don't double — it's not a real loss.
+        Counts ALL of them, not just this bot's magic number — margin does not
+        care whose order it is, so a manual trade counts against the cap too.
+        Fails open (returns 0) if MT5 cannot be queried, so a data glitch
+        never blocks trading.
         """
-        if not self.settings.mode_248:
-            return
-        # Breakeven check: if profit is within ±$0.50, treat as breakeven (no loss)
-        if profit is not None and abs(profit) < 0.50:
-            self.logger.info(
-                f"248 mode: {channel} breakeven close (profit={profit:.2f}) — no lot doubling"
-            )
-            return
-        current_mult = self.settings.get_248_multiplier(channel)
-        self.settings.advance_248_step(channel)
-        new_mult = self.settings.get_248_multiplier(channel)
-        self.logger.info(
-            f"248 mode: {channel} SL hit — lot multiplier: {current_mult}x -> {new_mult}x "
-            f"(lot will be {round(self.settings.lot_size * new_mult, 2)})"
-        )
-
-    def _on_tp_hit(self, channel: str):
-        """Called when a trade hits TP — reset lot multiplier to 1x."""
-        if not self.settings.mode_248:
-            return
-        current_mult = self.settings.get_248_multiplier(channel)
-        if current_mult > 1.0:
-            self.logger.info(
-                f"248 mode: {channel} TP hit — resetting multiplier from {current_mult}x to 1x"
-            )
-            self.settings.reset_248_multiplier(channel)
+        try:
+            positions = self.mt5.get_open_positions() or []
+            orders = self.mt5.get_pending_orders() or []
+            return len(positions) + len(orders)
+        except Exception as e:
+            self.logger.error(f"Open trade count failed: {e}")
+            return 0
 
     async def _handle_filled_closure(self, trade: "TradeRecord") -> None:
         """A filled position is no longer open — determine TP/SL and finalize.
 
-        Central closure path for ALL channels and the trigger for the 248
-        lot-doubling: _on_tp_hit resets the multiplier, _on_sl_hit advances it.
-        Linked-order breakeven for dual-entry channels is handled by the retry
-        loop in check_trade_updates(), so it is not duplicated here.
+        Central closure path for ALL channels: marks the trade TP_HIT/SL_HIT
+        and registers the per-channel SL cooldown on a real loss. Linked-order
+        breakeven for dual-entry channels is handled by the retry loop in
+        check_trade_updates(), so it is not duplicated here.
         """
         deal_info = self._check_deal_history(trade.ticket)
         if deal_info:
             profit = deal_info["profit"]
-            # Only the participating leg drives the 248 multiplier. The bigger-RR
-            # leg of a dual entry (participates_248=False) is flat-lot and ignored.
-            participates = getattr(trade, "participates_248", True)
             if profit > 0:
                 trade.status = TradeStatus.TP_HIT.value
                 status_emoji = "🎯 TP HIT"
-                if participates:
-                    self._on_tp_hit(trade.channel)
             else:
                 trade.status = TradeStatus.SL_HIT.value
                 status_emoji = "🛑 SL HIT"
                 self._register_sl_hit(trade.channel, profit)
-                if participates:
-                    self._on_sl_hit(trade.channel, profit)
 
             self.logger.info(
                 f"Filled position #{trade.ticket} closed ({trade.channel}) "
@@ -1592,17 +1554,6 @@ class TradeManager:
                 f"Profit: {profit:.2f} USD\n"
                 f"Source: {trade.channel}"
             )
-            if self.settings.mode_248:
-                if profit > 0:
-                    await self._report(
-                        f"\n✳️ 248: {trade.channel} TP hit — lot reset to {self.settings.lot_size}"
-                    )
-                else:
-                    next_mult = self.settings.get_248_multiplier(trade.channel)
-                    next_lot = round(self.settings.lot_size * next_mult, 2)
-                    await self._report(
-                        f"\n✳️ 248: {trade.channel} SL hit — next lot will be {next_lot} (x{next_mult})"
-                    )
             await self._commentary(
                 "tp_hit" if profit > 0 else "sl_hit",
                 {
@@ -1634,7 +1585,7 @@ class TradeManager:
 
         Matches any deal whose position_id OR order equals the ticket, then sums
         profit + commission + swap across all matching deals for the true net
-        result (accurate for the 248 breakeven guard).
+        result (accurate for the breakeven guard).
 
         The query window is timezone-safe: MT5 deal timestamps are in broker
         server time, so we widen the window (2 days back, +14h forward) to absorb
