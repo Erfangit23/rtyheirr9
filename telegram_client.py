@@ -51,8 +51,13 @@ class TelegramManager:
         self.on_cancel_callback: Optional[Callable[[str], Awaitable[None]]] = None
         self.on_modify_callback: Optional[Callable[[str, Optional[float], Optional[float]], Awaitable[None]]] = None
 
-        # Track processed message IDs to avoid duplicates
-        self.processed_ids: set[int] = set()
+        # Track processed messages to avoid duplicates.
+        # NOTE: Telegram message IDs are unique PER CHAT, not globally, so the
+        # key must include the chat id — keying on the message id alone made
+        # two different channels with the same numeric id silently drop each
+        # other's signals.
+        self.processed_ids: set = set()
+        self._max_processed_ids = 5000  # bound the set so it cannot grow forever
 
     async def connect_user_client(self) -> bool:
         """Connect the user session for reading channels."""
@@ -179,9 +184,13 @@ class TelegramManager:
                     return
 
             msg_id = event.message.id
-            if msg_id in self.processed_ids:
+            # Key on (chat, message) — message ids repeat across chats.
+            dedup_key = (chat_id if chat_id is not None else matched_channel["id"], msg_id)
+            if dedup_key in self.processed_ids:
                 return
-            self.processed_ids.add(msg_id)
+            if len(self.processed_ids) >= self._max_processed_ids:
+                self.processed_ids.clear()
+            self.processed_ids.add(dedup_key)
 
             # Get text — handle forwarded messages properly
             text = event.raw_text or ""

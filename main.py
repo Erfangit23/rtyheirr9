@@ -65,6 +65,7 @@ async def main():
         password=mt5_config["password"],
         server=mt5_config["server"],
         terminal_path=mt5_config.get("terminal_path", ""),
+        symbol=mt5_config.get("symbol", "XAUUSD"),
         logger=logger,
     )
 

@@ -132,12 +132,14 @@ After `/change`, enter password `Amin123`, then use:
 
 ## Safety Features
 
-- SL distance check (default max: 150 pips)
+- SL distance check (default max: 150 pips) — oversized stops are rejected
+- Daily loss cap (enforced): once today's realised loss reaches `max_daily_sl_pips`, new trades are blocked until the next day
 - Max concurrent open trades cap (default: 5, `max_open_trades` in config; 0 = unlimited)
-- Daily SL limit tracking
+- Duplicate-signal guard: a call re-posted while its order is still pending is ignored (no double exposure)
+- SL/TP side validation — misparsed or mistyped levels are rejected before ordering
 - Bot sleep/wake toggle
 - Password-protected settings changes
-- Only processes XAUUSD signals
+- Only processes gold (XAUUSD) signals
 - Only responds to authorized Telegram users
 - All trades logged with full audit trail
 

@@ -22,12 +22,16 @@ class MT5Connector:
         password: str,
         server: str,
         terminal_path: str = "",
+        symbol: str = "XAUUSD",
         logger: Optional[logging.Logger] = None,
     ):
         self.login = login
         self.password = password
         self.server = server
         self.terminal_path = terminal_path
+        # Broker symbol name (e.g. "XAUUSD", "XAUUSD.pro", "GOLD"). All
+        # queries and order requests use this name.
+        self.symbol = symbol or "XAUUSD"
         self.logger = logger or logging.getLogger("xau_trader")
         self.connected = False
 
@@ -83,11 +87,12 @@ class MT5Connector:
 
         return self.connect()
 
-    def get_symbol_price(self, symbol: str = "XAUUSD") -> Optional[tuple]:
+    def get_symbol_price(self, symbol: str = None) -> Optional[tuple]:
         """Return (bid, ask) for the symbol."""
         if not self.ensure_connected():
             return None
 
+        symbol = symbol or self.symbol
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
             self.logger.error(f"Failed to get tick for {symbol}")
@@ -392,16 +397,16 @@ class MT5Connector:
         return True
 
     def get_open_positions(self) -> list:
-        """Get all open positions."""
+        """Get all open positions for the configured symbol."""
         if not self.ensure_connected():
             return []
-        return mt5.positions_get(symbol="XAUUSD") or []
+        return mt5.positions_get(symbol=self.symbol) or []
 
     def get_pending_orders(self) -> list:
-        """Get all pending orders."""
+        """Get all pending orders for the configured symbol."""
         if not self.ensure_connected():
             return []
-        return mt5.orders_get(symbol="XAUUSD") or []
+        return mt5.orders_get(symbol=self.symbol) or []
 
     def get_account_info(self):
         """Get account information."""
@@ -434,3 +439,69 @@ class MT5Connector:
                 total_loss += abs(deal.profit)
 
         return {"deals": deal_list, "total_loss_usd": total_loss}
+
+    # Gold: 1 pip = 0.1 price units (same convention as the rest of the bot)
+    PIP_SIZE = 0.1
+
+    def get_today_loss_pips(self) -> float:
+        """Total pips lost TODAY by this bot (magic 779900), for the daily cap.
+
+        Sums the pip distance of every position closed today whose net result
+        (profit + commission + swap) is negative. The day boundary is taken in
+        BROKER server time, because MT5 deal timestamps use the server clock.
+
+        Returns 0.0 when data is unavailable (fail-open: a data glitch must
+        never silently block trading).
+        """
+        try:
+            if not self.ensure_connected():
+                return 0.0
+            import time as _time
+            from datetime import datetime, timezone, timedelta
+
+            # Server-time offset (deals are stamped in broker time)
+            offset = 0.0
+            tick = mt5.symbol_info_tick(self.symbol)
+            if tick and tick.time:
+                offset = tick.time - _time.time()
+
+            server_now = _time.time() + offset
+            day_start_server = server_now - (server_now % 86400)  # midnight, server time
+            # MT5 history calls compare the raw epoch we pass against deal.time,
+            # which is already in the broker's time domain — so pass the server
+            # epoch directly (see backtest._server_offset for the same logic).
+            utc_from = datetime.fromtimestamp(day_start_server, tz=timezone.utc)
+            utc_to = datetime.now(timezone.utc) + timedelta(hours=14)
+
+            deals = mt5.history_deals_get(utc_from, utc_to)
+            if not deals:
+                return 0.0
+
+            entry_in = getattr(mt5, "DEAL_ENTRY_IN", 0)
+            entry_out = getattr(mt5, "DEAL_ENTRY_OUT", 1)
+
+            positions = {}  # position_id -> {"net": float, "in": price, "out": price}
+            for d in deals:
+                if getattr(d, "magic", 0) != 779900:
+                    continue
+                key = getattr(d, "position_id", 0) or getattr(d, "order", 0)
+                rec = positions.setdefault(key, {"net": 0.0, "in": None, "out": None})
+                rec["net"] += (
+                    getattr(d, "profit", 0.0)
+                    + getattr(d, "commission", 0.0)
+                    + getattr(d, "swap", 0.0)
+                )
+                if getattr(d, "entry", None) == entry_in:
+                    rec["in"] = d.price
+                elif getattr(d, "entry", None) == entry_out:
+                    rec["out"] = d.price
+
+            total_pips = 0.0
+            for rec in positions.values():
+                if rec["net"] >= 0 or rec["in"] is None or rec["out"] is None:
+                    continue
+                total_pips += abs(rec["out"] - rec["in"]) / self.PIP_SIZE
+            return total_pips
+        except Exception as e:
+            self.logger.error(f"Daily loss (pips) check failed: {e}")
+            return 0.0

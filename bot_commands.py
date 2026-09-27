@@ -353,6 +353,21 @@ class CommandHandler:
         lines = [f"📈 Today's Trade Report\n\n"]
         lines.append(f"Total deals today: {len(deals)}\n")
 
+        # Daily loss cap status (enforced in TradeManager.process_signal)
+        cap = self.settings.max_daily_sl_pips
+        loss_fn = getattr(self.mt5, "get_today_loss_pips", None)
+        if cap and loss_fn:
+            try:
+                lost = loss_fn()
+                lines.append(
+                    f"Daily loss: {lost:.0f}/{cap} pips"
+                    f"{' — ⛔ CAP REACHED, new trades blocked' if lost >= cap else ''}\n"
+                )
+            except Exception as e:
+                self.logger.error(f"Daily loss read error: {e}")
+        elif not cap:
+            lines.append("Daily loss cap: disabled\n")
+
         if deals:
             lines.append("\nDeals:\n")
             for d in deals:

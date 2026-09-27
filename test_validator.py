@@ -339,18 +339,18 @@ def test_trade_manager_hook():
         FAKE.tick = FakeTick(4599.0, 4599.2)
 
         # Enforce: RSI fails -> order NOT placed
-        asyncio.run(tm.process_signal(sig("BUY")))
+        asyncio.run(tm.process_signal(sig("BUY", entry=4400.0, sl=4395.0)))
         _check(failures, f"enforce blocks order (calls={mt5rec.calls})", mt5rec.calls == 0)
 
         # Dry-run: same signal -> order placed anyway
         s.set_validation_mode("dry_run")
-        asyncio.run(tm.process_signal(sig("BUY")))
+        asyncio.run(tm.process_signal(sig("BUY", entry=4402.0, sl=4397.0)))
         _check(failures, f"dry-run still places order (calls={mt5rec.calls})",
                mt5rec.calls == 1)
 
         # Mode off: no filter activity at all
         s.set_validation_mode("off")
-        asyncio.run(tm.process_signal(sig("BUY")))
+        asyncio.run(tm.process_signal(sig("BUY", entry=4404.0, sl=4399.0)))
         _check(failures, f"mode off places order (calls={mt5rec.calls})",
                mt5rec.calls == 2)
         return failures

@@ -138,8 +138,8 @@ def run_scenarios():
 
         # --- SL-too-large (-1) is reported as REJECTED_SL, not "MT5 code 1" ---
         mt5.force_ticket = -1
-        sig = Signal(symbol="XAUUSD", direction="SELL", entry=4400.0,
-                     stop_loss=4540.0, take_profits=[4380.0], source_channel="@forexkhan")
+        sig = Signal(symbol="XAUUSD", direction="SELL", entry=4410.0,
+                     stop_loss=4550.0, take_profits=[4380.0], source_channel="@forexkhan")
         asyncio.run(tm.process_signal(sig))
         mt5.force_ticket = None
         rec = tm.trades[-1] if tm.trades else None

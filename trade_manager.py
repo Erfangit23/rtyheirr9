@@ -245,14 +245,34 @@ class TradeManager:
             return 0.0
         try:
             t = datetime.fromisoformat(ts)
-        except ValueError:
+        except (ValueError, TypeError):
             return 0.0
-        elapsed_min = (datetime.now(timezone.utc) - t).total_seconds() / 60
+        try:
+            elapsed_min = (datetime.now(timezone.utc) - t).total_seconds() / 60
+        except TypeError:
+            # Naive timestamp stored by an older version — treat as expired
+            self.logger.warning(f"SL cooldown timestamp without timezone: {ts}")
+            return 0.0
         return max(0.0, self.SL_COOLDOWN_MINUTES - elapsed_min)
 
     async def process_signal(self, signal: Signal):
         """Process a parsed signal: apply risk checks and place order."""
         self.logger.info(f"Processing signal: {signal}")
+
+        # Normalise the symbol to the broker's configured name (a real broker
+        # may call gold "XAUUSD.pro", "GOLD", etc.). Everything downstream —
+        # records, price queries, position matching — then uses one name.
+        broker_symbol = (self.settings.mt5 or {}).get("symbol") or "XAUUSD"
+        if signal.symbol != broker_symbol:
+            self.logger.info(f"Symbol normalised: {signal.symbol} -> {broker_symbol}")
+            signal.symbol = broker_symbol
+
+        # A signal with no take-profit level cannot produce a valid order.
+        if not signal.take_profits:
+            self.logger.warning(
+                f"Signal without TPs from {signal.source_channel} — ignored"
+            )
+            return
 
         # Check if bot is active
         if not self.settings.bot_active:
@@ -340,13 +360,69 @@ class TradeManager:
                 f"(/filtermode on to start enforcing)"
             )
 
-        # Check daily SL limit
-        daily_summary = self.mt5.get_today_trade_summary()
-        daily_loss = daily_summary.get("total_loss_usd", 0.0)
-        # We compare in USD terms as approximation
-        # For more precise tracking, we'd convert pips to USD
-        if daily_loss > 0:
-            self.logger.info(f"Today's loss so far: {daily_loss:.2f} USD")
+        # --- Daily loss cap (enforced) ---
+        # Stops opening new trades once today's realised loss reaches
+        # max_daily_sl_pips (0 disables the cap). Measured in pips on closed
+        # positions, in broker server time — see MT5Connector.get_today_loss_pips.
+        max_daily = self.settings.max_daily_sl_pips
+        loss_fn = getattr(self.mt5, "get_today_loss_pips", None)
+        if max_daily and loss_fn:
+            try:
+                lost_today = loss_fn()
+            except Exception as e:
+                # Fail open: never block trading because a stat read failed
+                self.logger.error(f"Daily loss read failed: {e}")
+                lost_today = 0.0
+            if lost_today >= max_daily:
+                self.logger.warning(
+                    f"Daily loss cap reached: {lost_today:.0f} pips >= "
+                    f"{max_daily} — rejecting signal from {signal.source_channel}"
+                )
+                record = TradeRecord(
+                    ticket=0,
+                    channel=signal.source_channel,
+                    symbol=signal.symbol,
+                    direction=signal.direction,
+                    entry=signal.entry,
+                    sl=signal.stop_loss,
+                    tp=signal.take_profits[0],
+                    tp_index=1,
+                    lot_size=self.settings.lot_size,
+                    status=TradeStatus.REJECTED_DAILY.value,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    raw_signal=signal.raw_text[:200],
+                )
+                self.trades.append(record)
+                self._save_trades()
+                await self._report(
+                    f"🛑 Signal SKIPPED — daily loss cap reached:\n"
+                    f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                    f"Lost today: {lost_today:.0f} pips (cap {max_daily})\n"
+                    f"Trading resumes tomorrow (or /change -> dailysl <n>)\n"
+                    f"Source: {signal.source_channel}"
+                )
+                return
+            if lost_today > 0:
+                self.logger.info(
+                    f"Today's loss so far: {lost_today:.0f}/{max_daily} pips"
+                )
+
+        # --- Duplicate guard ---
+        # If the channel re-posts a call we still have pending, placing it
+        # again would double the exposure on the same level.
+        dup = self._find_duplicate_pending(signal)
+        if dup is not None:
+            self.logger.info(
+                f"Duplicate signal ignored ({signal.source_channel} "
+                f"{signal.direction} @ {signal.entry}) — order #{dup.ticket} still pending"
+            )
+            await self._report(
+                f"♻️ Duplicate signal ignored:\n"
+                f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
+                f"Order #{dup.ticket} from this channel is still pending.\n"
+                f"Source: {signal.source_channel}"
+            )
+            return
 
         # Determine TP index and whether to place split orders
         # Per-channel TP override: gold_alicxzos110 uses TP3, others use default
@@ -1507,9 +1583,38 @@ class TradeManager:
 
         return stats
 
+    # A channel re-posting the same call while our order is still pending is a
+    # duplicate; within this window (minutes) it is ignored.
+    DUPLICATE_WINDOW_MIN = 60
+
+    def _find_duplicate_pending(self, signal) -> Optional[TradeRecord]:
+        """Return a still-pending trade that matches this signal, or None.
+
+        Match = same channel + same direction + entry within 10 pips, created
+        within DUPLICATE_WINDOW_MIN. Prevents double exposure when a channel
+        repeats a call we have not filled yet.
+        """
+        now = datetime.now(timezone.utc)
+        for t in reversed(self.trades):
+            if t.status != TradeStatus.PENDING.value:
+                continue
+            if t.channel != signal.source_channel:
+                continue
+            if t.direction.upper() != signal.direction.upper():
+                continue
+            if abs(t.entry - signal.entry) > 1.0:  # 10 pips
+                continue
+            try:
+                age_min = (now - datetime.fromisoformat(t.timestamp)).total_seconds() / 60
+            except Exception:
+                return t  # unparsable timestamp — be safe and treat as duplicate
+            if age_min <= self.DUPLICATE_WINDOW_MIN:
+                return t
+        return None
+
     def _open_trade_count(self) -> int:
         """Current open exposure on the account: open positions + pending
-        orders for XAUUSD.
+        orders for the configured symbol.
 
         Counts ALL of them, not just this bot's magic number — margin does not
         care whose order it is, so a manual trade counts against the cap too.

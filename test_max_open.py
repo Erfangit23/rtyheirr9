@@ -88,15 +88,15 @@ def _check(failures, label, cond):
         failures.append(label)
 
 
-def single_signal():
-    return Signal(symbol="XAUUSD", direction="SELL", entry=4060.0, stop_loss=4070.0,
-                  take_profits=[4050.0, 4040.0], source_channel="@forexkhan")
+def single_signal(entry=4060.0):
+    return Signal(symbol="XAUUSD", direction="SELL", entry=entry, stop_loss=entry + 10.0,
+                  take_profits=[entry - 10.0, entry - 20.0], source_channel="@forexkhan")
 
 
-def dual_signal():
-    return Signal(symbol="XAUUSD", direction="BUY", entry=4063.0, stop_loss=4057.0,
-                  take_profits=[4068.0, 4085.0], source_channel="@BrianTradingForex",
-                  entries=[4060.0, 4063.0])
+def dual_signal(entry=4063.0):
+    return Signal(symbol="XAUUSD", direction="BUY", entry=entry, stop_loss=entry - 6.0,
+                  take_profits=[entry + 5.0, entry + 22.0], source_channel="@BrianTradingForex",
+                  entries=[entry - 3.0, entry])
 
 
 def main():
@@ -113,7 +113,7 @@ def main():
         tm.trades = []
 
         # --- 0 open -> placed ---
-        asyncio.run(tm.process_signal(single_signal()))
+        asyncio.run(tm.process_signal(single_signal(4060.0)))
         _check(failures, f"0 open: order placed (got {len(mt5.placed)})",
                len(mt5.placed) == 1)
         _check(failures, "0 open: record is pending",
@@ -122,7 +122,7 @@ def main():
         # --- 4 open (3 positions + 1 pending) -> placed (5th) ---
         mt5.placed.clear()
         mt5.n_positions, mt5.n_orders = 3, 1
-        asyncio.run(tm.process_signal(single_signal()))
+        asyncio.run(tm.process_signal(single_signal(4062.0)))
         _check(failures, f"4 open: 5th order placed (got {len(mt5.placed)})",
                len(mt5.placed) == 1)
 
@@ -130,7 +130,7 @@ def main():
         mt5.placed.clear()
         n_before = len(tm.trades)
         mt5.n_positions, mt5.n_orders = 4, 1
-        asyncio.run(tm.process_signal(single_signal()))
+        asyncio.run(tm.process_signal(single_signal(4064.0)))
         _check(failures, f"5 open: no order placed (got {len(mt5.placed)})",
                len(mt5.placed) == 0)
         _check(failures, f"5 open: record added as rejected_max_open (got {tm.trades[-1].status})",
@@ -140,14 +140,14 @@ def main():
         # --- dual entry needs 2 slots: 4 open -> skipped ---
         mt5.placed.clear()
         mt5.n_positions, mt5.n_orders = 3, 1     # 4 open, dual needs 2 -> 6 > 5
-        asyncio.run(tm.process_signal(dual_signal()))
+        asyncio.run(tm.process_signal(dual_signal(4070.0)))
         _check(failures, f"4 open + dual (needs 2): skipped (got {len(mt5.placed)})",
                len(mt5.placed) == 0)
 
         # --- dual entry with 3 open -> both legs placed ---
         mt5.placed.clear()
         mt5.n_positions, mt5.n_orders = 2, 1     # 3 open, dual -> 5 <= 5
-        asyncio.run(tm.process_signal(dual_signal()))
+        asyncio.run(tm.process_signal(dual_signal(4080.0)))
         _check(failures, f"3 open + dual: 2 legs placed (got {len(mt5.placed)})",
                len(mt5.placed) == 2)
 
@@ -155,7 +155,7 @@ def main():
         settings.set_max_open_trades(0)
         mt5.placed.clear()
         mt5.n_positions, mt5.n_orders = 15, 5
-        asyncio.run(tm.process_signal(single_signal()))
+        asyncio.run(tm.process_signal(single_signal(4090.0)))
         _check(failures, f"cap 0 (unlimited): placed (got {len(mt5.placed)})",
                len(mt5.placed) == 1)
         settings.set_max_open_trades(5)
