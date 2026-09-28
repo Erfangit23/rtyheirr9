@@ -218,6 +218,21 @@ You should see `All systems ready` and `Monitoring 11 channels: [...]`.
 
 ---
 
+### If Telegram login or channel access misbehaves
+
+Run the built-in read-only checker (it reads `config.json`, so no credentials go into any script):
+
+```cmd
+venv\Scripts\python check_telegram.py
+```
+
+It tells you:
+- whether your `api_id` / `api_hash` pair is still valid (or revoked/flagged),
+- which Telegram account the saved session belongs to,
+- **which of your channels that account can actually read** — the most common cause of "no signals" is that the logged-in account is not a member of a channel.
+
+It never sends a login code and never changes anything.
+
 ## Step 6 — Run it 24/7
 
 `start.bat` already restarts the bot 10 seconds after any crash. To also start it automatically after a VPS reboot, create a scheduled task:
@@ -288,6 +303,8 @@ Then restart it (close the bot window and run `start.bat`, or restart the schedu
 | No Telegram reports | You never sent `/start` to the bot, or wrong token / user ID | Send `/start` to the bot; check `bot_token` and `authorized_user_ids` |
 | Order stays pending, never fills | It is a **limit** order waiting for the price | Normal — it cancels itself if price reaches TP2 without filling |
 | Bot restarts in a loop every 10s | Bad `config.json` (missing credentials) | Read the console error, fix `config.json` |
+| `Backtest failed ... could not convert string to float: '.'` | A channel posted/edited a message with a missing price | Fixed — `git pull` and restart |
+| Telegram login fails, or some channels never produce signals | Wrong/revoked api credentials, or the logged-in account is not a member | Run `venv\Scripts\python check_telegram.py` (see below) |
 
 ---
 
