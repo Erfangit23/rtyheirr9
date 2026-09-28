@@ -74,6 +74,7 @@ class CommandHandler:
                 "/filtermode off|dry|on - Filter mode\n"
                 "/fema /frsi /fatr on|off [@channel] - Toggle a filter\n"
                 "/femabuf /rsith /atrfloor <value> - Tune filter thresholds\n"
+                "/filterpreset strict|balanced|off - One-shot threshold presets\n"
                 "/makeaion - Enable AI signal parsing\n"
                 "/makeaioff - Disable AI signal parsing\n\n"
                 "🔐 To change settings, send:\n"
@@ -167,6 +168,41 @@ class CommandHandler:
             self.settings.set_atr_floor(val)
             return (f"✅ ATR SL floor = {val:g}x ATR(M15)\n"
                     f"Run /backtest to see the effect before enforcing.")
+
+        # --- Filter presets ---
+        if text.lower().startswith("/filterpreset"):
+            presets = {
+                "strict":   (0.0, (60, 40), 0.8),
+                "balanced": (0.3, (70, 30), 0.5),
+                "off":      (0.3, (75, 25), 0.5),
+            }
+            parts = text.split()
+            if len(parts) < 2 or parts[1].lower() not in presets:
+                cur = self.settings.filter_config_for_channel(None, "ema200") or {}
+                return (
+                    "Usage: /filterpreset strict|balanced|off\n"
+                    "  strict   = EMA buffer 0x, RSI 60/40, ATR floor 0.8x\n"
+                    "  balanced = EMA buffer 0.3x, RSI 70/30, ATR floor 0.5x\n"
+                    "  off      = back to the original lenient values (0.3 / 75-25 / 0.5)\n"
+                    f"\nCurrent EMA buffer: {cur.get('buffer_atr_mult', 0.3)}\n"
+                    "Tip: run /backtest first — the 📐 scan shows the Strict preset row."
+                )
+            name = parts[1].lower()
+            buf, (bmax, smin), floor = presets[name]
+            self.settings.set_ema_buffer(buf)
+            self.settings.set_rsi_thresholds(bmax, smin)
+            self.settings.set_atr_floor(floor)
+            if name == "strict":
+                return (
+                    "🔥 Strict preset applied://n"
+                    "  EMA200 buffer 0x (only with the trend)\n"
+                    f"  RSI: reject BUY >= {bmax}, SELL <= {smin}\n"
+                    f"  ATR floor {floor}x (no hair-trigger stops)\n\n"
+                    "Still in dry-run unless you ran /filtermode on.\n"
+                    "Run /backtest to see the effect on each channel."
+                )
+            return (f"✅ Preset '{name}' applied "
+                    f"(EMA {buf}x, RSI {bmax}/{smin}, ATR {floor}x).")
 
         # --- Signal filter commands ---
         if text.lower() == "/filters":
@@ -551,6 +587,7 @@ class CommandHandler:
         lines.append(
             "\nToggle: /fema /frsi /fatr on|off [@channel]\n"
             "Tune:   /femabuf <0-5> | /rsith <buy>/<sell> | /atrfloor <0.1-3>\n"
+            "Preset: /filterpreset strict|balanced|off\n"
             "Mode:   /filtermode off|dry|on\n"
             "Tip:    /backtest shows a 📐 threshold scan per channel — use it to"
             " pick the setting that actually helps."

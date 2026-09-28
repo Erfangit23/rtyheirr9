@@ -307,17 +307,25 @@ tune with numbers, not with guesses.
    ```
 
    `←current` marks what you use today. ✅ = would have helped, ⚠️ = would have hurt.
-3. Apply the winners from Telegram — no file editing needed:
+3. Fastest option — apply a preset, then verify with the scan:
+   - `/filterpreset strict`   → EMA buffer 0x, RSI 60/40, ATR floor 0.8x
+   - `/filterpreset balanced` → EMA buffer 0.3x, RSI 70/30, ATR floor 0.5x
+   - `/filterpreset off`      → back to the original lenient values
+   Every scan also prints a **Strict preset** row, so you can see what the
+   strict combination would have done *before* applying it.
+4. Or tune one filter at a time — no file editing needed:
    - `/femabuf 0`   → EMA200 neutral zone in ATR units (`0` = strictest)
    - `/rsith 70/30` → reject BUY at/above 70, SELL at/below 30
    - `/atrfloor 0.8` → reject stops tighter than 0.8 x ATR(M15)
-4. Re-run `/backtest` to confirm the improvement, then `/filtermode on`.
-5. Per channel: if a channel does better with filters off, use `/fema off @channel`
+5. Re-run `/backtest` to confirm the improvement, then `/filtermode on`.
+6. Per channel: if a channel does better with filters off, use `/fema off @channel`
    (or `"filters": false` in its config entry).
 
 Notes: the scan ignores a threshold that would block more than half of the
 trades (that is a shutdown, not a filter) and stays silent on samples smaller
-than 10 closed trades.
+than 10 closed trades. If a filter shows **⚠️ NO DATA**, the backtest could not
+read enough history for it at signal time — that filter was inactive, so its
+"0 blocked" means nothing.
 
 ## Troubleshooting
 

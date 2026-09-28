@@ -107,7 +107,29 @@ def main():
     text2 = "\n".join(rows2)
     _check(failures, "no combo claimed", "Best combo" not in text2)
     _check(failures, "no ✅ verdict", "✅" not in text2)
-    _check(failures, "stays silent when nothing can help", rows2 == [])
+    _check(failures, "explains that nothing can be filtered",
+           "nothing to filter" in text2)
+    _check(failures, "no strict-preset row when it blocks nothing",
+           "Strict preset" not in text2)
+
+    # ---- 2b) a filter with no data must SAY SO (regression: the H1 window was
+    #          too short, so EMA200 failed open on every signal and the scan
+    #          silently omitted the whole EMA200 row) ----
+    print("-- a dead filter is reported, not hidden --")
+    res5 = BacktestResult(channel="@TestCh")
+    for i in range(6):
+        res5.results.append(outcome("tp_hit", 90.0, ema_atr=None, rsi=55.0, sl_atr=1.0))
+    for i in range(6):
+        res5.results.append(outcome("sl_hit", -100.0, ema_atr=None, rsi=55.0, sl_atr=1.0))
+    rows5 = "\n".join(B._scan_table(res5))
+    _check(failures, "EMA200 with no metric data is flagged",
+           "NO DATA" in rows5 and "EMA200" in rows5)
+
+    # ---- 2c) the strict preset row shows what 'much stricter' would do ----
+    print("-- strict preset row --")
+    rows6 = "\n".join(B._scan_table(res))
+    _check(failures, "strict preset row is shown", "Strict preset" in rows6)
+    _check(failures, "mentions /filterpreset", "/filterpreset strict" in rows6)
 
     # ---- 3) tiny sample: stay silent ----
     print("-- tiny samples stay silent --")

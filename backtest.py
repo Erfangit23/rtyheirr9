@@ -253,7 +253,11 @@ class Backtester:
     # ------------------------------------------------------------------
     TF_SECONDS = {"M1": 60, "M5": 300, "M15": 900, "M30": 1800,
                   "H1": 3600, "H4": 14400, "D1": 86400}
-    FILTER_BARS = {"H1": 260, "M15": 320}  # bars fetched before the signal
+    # Bars fetched before the signal. NOTE: the fetch is TIME based, and gold
+    # only trades ~5 days a week — so a window of N calendar hours yields only
+    # ~N*5/7 bars. EMA200 needs 201 COMPLETED H1 bars, i.e. ~285 calendar
+    # hours; 400 gives ~285 trading bars and a safe margin.
+    FILTER_BARS = {"H1": 400, "M15": 400}
 
     def _completed_bars(self, symbol: str, tf_name: str, signal_epoch: float):
         """Bars of tf_name that fully closed before signal_epoch (oldest->newest),
@@ -394,12 +398,16 @@ class Backtester:
     # ------------------------------------------------------------------
     # Threshold scan — which setting would actually have helped?
     # ------------------------------------------------------------------
+    METRIC_ATTR = {"ema200": "m_ema_atr", "rsi": "m_rsi", "atr_sl": "m_sl_atr"}
+    # A deliberately strict combination, shown in every scan so you can see
+    # what "much stricter" would have done before applying it.
+    STRICT_PRESET = {"ema200": 0.0, "rsi": (60, 40), "atr_sl": 0.8}
     SCAN_MIN_TRADES = 10     # don't draw conclusions from tiny samples
     SCAN_MAX_BLOCK_PCT = 0.5  # a "filter" that blocks most trades is a shutdown,
                               # not a filter — such thresholds are ignored
-    SCAN_EMA_BUFFER = [0.0, 0.2, 0.3, 0.5, 1.0]
-    SCAN_RSI = [(60, 40), (65, 35), (70, 30), (75, 25)]
-    SCAN_ATR_FLOOR = [0.3, 0.5, 0.8, 1.0, 1.5]
+    SCAN_EMA_BUFFER = [0.0, 0.2, 0.3, 0.5, 1.0, 2.0]
+    SCAN_RSI = [(50, 50), (55, 45), (60, 40), (65, 35), (70, 30), (75, 25)]
+    SCAN_ATR_FLOOR = [0.2, 0.3, 0.5, 0.8, 1.0, 1.5, 2.0]
 
     def _scan_eval(self, closed, base_net, fname, thr):
         """Replay the already-simulated trades against one candidate threshold."""
@@ -473,6 +481,16 @@ class Backtester:
             # degenerating into "block everything"
             evs = [e for e in evs if 0 < e[1]["blocked"] <= max_block]
             if not evs:
+                # Never let a filter disappear silently: say whether it had no
+                # data (fail-open) or simply never triggered.
+                has_data = any(getattr(o, self.METRIC_ATTR[fname]) is not None
+                               for o in closed)
+                if not has_data:
+                    lines.append(f"  {labeler(default)}: ⚠️ NO DATA at signal time "
+                                 f"(check the H1/M15 history window) — filter inactive")
+                else:
+                    lines.append(f"  {labeler(default)}: blocks 0 — nothing to "
+                                 f"filter, every signal already passes")
                 continue
             best_t, best_ev = max(evs, key=lambda e: (e[1]["delta"], -e[1]["blocked"]))
 
@@ -492,6 +510,36 @@ class Backtester:
 
         out = ["", "📐 Threshold scan (same trades, different thresholds):"]
         out += lines
+
+        # what a deliberately strict preset would have done
+        if self.settings:
+            keep_ids, blocked_any = None, False
+            for fname, thr in (("ema200", self.STRICT_PRESET["ema200"]),
+                               ("rsi", self.STRICT_PRESET["rsi"]),
+                               ("atr_sl", self.STRICT_PRESET["atr_sl"])):
+                try:
+                    cfg = self.settings.filter_config_for_channel(ch, fname)
+                except Exception:
+                    cfg = None
+                if not cfg or not cfg.get("enabled", True):
+                    continue
+                ev = self._scan_eval(closed, base_net, fname, thr)
+                keep_ids = ev["kept_ids"] if keep_ids is None else (keep_ids & ev["kept_ids"])
+                blocked_any = blocked_any or ev["blocked"] > 0
+            if keep_ids is not None and blocked_any:
+                kept = [o for o in closed if id(o) in keep_ids]
+                k_tp = sum(1 for o in kept if o.status == "tp_hit")
+                k_net = sum(o.profit_pips for o in kept)
+                blocked = len(closed) - len(kept)
+                b_tp = base_tp - k_tp
+                delta = k_net - base_net
+                v = "✅ HELPS" if delta > 0 else ("➖ neutral" if delta == 0 else "⚠️ HURTS")
+                out.append(
+                    f"  Strict preset (EMA 0x + RSI 60/40 + ATR 0.8x): blocks {blocked} "
+                    f"({b_tp}W/{blocked - b_tp}L), net {base_net:+.0f}→{k_net:+.0f} "
+                    f"({delta:+.0f}) {v}"
+                )
+                out.append("  One-shot: /filterpreset strict  (or /filterpreset balanced)")
 
         # combined effect of the best thresholds
         if best:

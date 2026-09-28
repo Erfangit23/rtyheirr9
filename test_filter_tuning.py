@@ -114,6 +114,30 @@ def main():
     _check(failures, "mentions the tuning commands", "/femabuf" in out and "/rsith" in out and "/atrfloor" in out)
     _check(failures, "mentions the threshold scan", "threshold scan" in out)
 
+    print("-- /filterpreset --")
+    _check(failures, "usage without a name", "Usage" in run("/filterpreset"))
+    _check(failures, "unknown preset rejected", "Usage" in run("/filterpreset bogus"))
+    _check(failures, "values unchanged after bad input",
+           ema_buf() == 0.5 and rsi_thr() == (65.0, 35.0) and atr_floor() == 0.8)
+
+    out = run("/filterpreset strict")
+    _check(failures, f"strict: ema 0x (got {ema_buf()})", ema_buf() == 0.0)
+    _check(failures, f"strict: rsi 60/40 (got {rsi_thr()})", rsi_thr() == (60.0, 40.0))
+    _check(failures, f"strict: atr 0.8x (got {atr_floor()})", atr_floor() == 0.8)
+    _check(failures, "strict reply mentions dry-run", "dry-run" in out)
+    _check(failures, "strict reply points at /backtest", "/backtest" in out)
+
+    run("/filterpreset balanced")
+    _check(failures, f"balanced: ema 0.3x (got {ema_buf()})", ema_buf() == 0.3)
+    _check(failures, f"balanced: rsi 70/30 (got {rsi_thr()})", rsi_thr() == (70.0, 30.0))
+    _check(failures, f"balanced: atr 0.5x (got {atr_floor()})", atr_floor() == 0.5)
+
+    run("/filterpreset off")
+    _check(failures, f"off: original lenient values (got {rsi_thr()})", rsi_thr() == (75.0, 25.0))
+
+    _check(failures, "/filters mentions the preset command",
+           "/filterpreset" in run("/filters"))
+
     print("=" * 40)
     if failures:
         print(f"RESULT: {len(failures)} check(s) FAILED")
