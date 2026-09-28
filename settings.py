@@ -238,6 +238,27 @@ class Settings:
                 out[ch.get("id")] = False
         return out
 
+    def set_ema_buffer(self, mult: float):
+        """EMA200 neutral zone, in ATR units (0 = strictest: BUY only above the
+        EMA, SELL only below)."""
+        with self._lock:
+            self._data.setdefault("validation", {}).setdefault("ema200", {})["buffer_atr_mult"] = mult
+        self.save()
+
+    def set_rsi_thresholds(self, buy_max: float, sell_min: float):
+        """Reject BUY at/above buy_max and SELL at/below sell_min."""
+        with self._lock:
+            v = self._data.setdefault("validation", {}).setdefault("rsi", {})
+            v["buy_max"] = buy_max
+            v["sell_min"] = sell_min
+        self.save()
+
+    def set_atr_floor(self, mult: float):
+        """Minimum SL distance in ATR(M15) units — stops inside it are rejected."""
+        with self._lock:
+            self._data.setdefault("validation", {}).setdefault("atr_sl", {})["min_sl_atr_mult"] = mult
+        self.save()
+
     def set_filter_enabled(self, name: str, enabled: bool, channel_id: str = None):
         """Toggle a filter globally or for one channel (from Telegram)."""
         with self._lock:

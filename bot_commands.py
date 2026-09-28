@@ -73,6 +73,7 @@ class CommandHandler:
                 "/filters - Signal filter status (EMA200/RSI/ATR)\n"
                 "/filtermode off|dry|on - Filter mode\n"
                 "/fema /frsi /fatr on|off [@channel] - Toggle a filter\n"
+                "/femabuf /rsith /atrfloor <value> - Tune filter thresholds\n"
                 "/makeaion - Enable AI signal parsing\n"
                 "/makeaioff - Disable AI signal parsing\n\n"
                 "🔐 To change settings, send:\n"
@@ -109,6 +110,63 @@ class CommandHandler:
         if text.lower() == "/makeaioff":
             self.settings.set_ai_mode(False)
             return "⚙️ AI mode is now OFF. Signals will be parsed by regex parsers."
+
+        # --- Signal filter threshold tuning ---
+        if text.lower().startswith("/femabuf"):
+            parts = text.split()
+            cur = (self.settings.filter_config_for_channel(None, "ema200") or {}).get("buffer_atr_mult", 0.3)
+            if len(parts) < 2:
+                return (f"Usage: /femabuf <0-5>\n"
+                        f"EMA200 neutral zone in ATR units. 0 = strictest "
+                        f"(BUY only above the EMA, SELL only below).\nCurrent: {cur}")
+            try:
+                val = float(parts[1])
+            except ValueError:
+                return "❌ Not a number. Example: /femabuf 0"
+            if val < 0 or val > 5:
+                return "❌ Use a value between 0 and 5."
+            self.settings.set_ema_buffer(val)
+            return (f"✅ EMA200 buffer = {val:g}x ATR\n"
+                    f"{'Strictest: signals must be on the trend side of the EMA.' if val == 0 else ''}\n"
+                    f"Run /backtest to see the effect before enforcing.")
+
+        if text.lower().startswith("/rsith"):
+            parts = text.split()
+            cfg = self.settings.filter_config_for_channel(None, "rsi") or {}
+            cur = f"{cfg.get('buy_max', 75):g}/{cfg.get('sell_min', 25):g}"
+            if len(parts) < 2:
+                return (f"Usage: /rsith <buy_max>/<sell_min>\n"
+                        f"Reject BUY at/above buy_max and SELL at/below sell_min.\nCurrent: {cur}")
+            # accept both "/rsith 70/30" and "/rsith 70 30"
+            raw = " ".join(parts[1:]).replace("/", " ")
+            try:
+                nums = [float(x) for x in raw.split()]
+                if len(nums) != 2:
+                    raise ValueError
+                buy_max, sell_min = nums
+            except ValueError:
+                return "❌ Format: /rsith 70/30"
+            if not (0 < sell_min < buy_max < 100):
+                return "❌ Need 0 < sell_min < buy_max < 100."
+            self.settings.set_rsi_thresholds(buy_max, sell_min)
+            return (f"✅ RSI thresholds: reject BUY >= {buy_max:g}, SELL <= {sell_min:g}\n"
+                    f"Run /backtest to see the effect before enforcing.")
+
+        if text.lower().startswith("/atrfloor"):
+            parts = text.split()
+            cur = (self.settings.filter_config_for_channel(None, "atr_sl") or {}).get("min_sl_atr_mult", 0.5)
+            if len(parts) < 2:
+                return (f"Usage: /atrfloor <0.1-3>\n"
+                        f"Reject stops tighter than this many ATR(M15).\nCurrent: {cur}")
+            try:
+                val = float(parts[1])
+            except ValueError:
+                return "❌ Not a number. Example: /atrfloor 0.8"
+            if val < 0.1 or val > 3:
+                return "❌ Use a value between 0.1 and 3."
+            self.settings.set_atr_floor(val)
+            return (f"✅ ATR SL floor = {val:g}x ATR(M15)\n"
+                    f"Run /backtest to see the effect before enforcing.")
 
         # --- Signal filter commands ---
         if text.lower() == "/filters":
@@ -492,7 +550,10 @@ class CommandHandler:
                     lines.append(f"  {ch_id}: {', '.join(parts)}")
         lines.append(
             "\nToggle: /fema /frsi /fatr on|off [@channel]\n"
-            "Mode: /filtermode off|dry|on"
+            "Tune:   /femabuf <0-5> | /rsith <buy>/<sell> | /atrfloor <0.1-3>\n"
+            "Mode:   /filtermode off|dry|on\n"
+            "Tip:    /backtest shows a 📐 threshold scan per channel — use it to"
+            " pick the setting that actually helps."
         )
         return "".join(lines)
 

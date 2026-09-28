@@ -219,8 +219,9 @@ def main():
 
     print("-- no settings -> simulation disabled --")
     B3 = Backtester(user_client=None, mt5_connector=FakeConn(), logger=log)
-    _check(failures, "no settings: _filter_failures returns None",
-           B3._filter_failures(sig_up, T2) is None)
+    fails3, metrics3 = B3._filter_failures(sig_up, T2)
+    _check(failures, "no settings: _filter_failures returns (None, {})",
+           fails3 is None and metrics3 == {})
 
     print("=" * 40)
     if failures:

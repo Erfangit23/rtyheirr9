@@ -288,6 +288,37 @@ Then restart it (close the bot window and run `start.bat`, or restart the schedu
 
 ---
 
+## Making the filters stricter (the right way)
+
+A filter only helps if it blocks trades that would have LOST. On a channel that
+wins 2 out of 3 trades, simply blocking more signals makes things worse — so
+tune with numbers, not with guesses.
+
+1. Run `/backtest` and pick a channel.
+2. Read the **📐 Threshold scan** section of the report. It replays the SAME
+   trades against several candidate thresholds and shows, for each one:
+
+   ```
+   📐 Threshold scan (same trades, different thresholds):
+     EMA200 buffer 0.3x: blocks 14 (7W/5L) net +375720→+375570 (-150) ⚠️ ←current
+     EMA200 buffer 0.0x: blocks 31 (5W/26L) net +375720→+381004 (+5284) ✅
+     🏆 Best combo (EMA200 buffer 0.0x + RSI 70/30): blocks 61 (11W/50L),
+        net +375720→+384000 (+8280) ✅ HELPS
+   ```
+
+   `←current` marks what you use today. ✅ = would have helped, ⚠️ = would have hurt.
+3. Apply the winners from Telegram — no file editing needed:
+   - `/femabuf 0`   → EMA200 neutral zone in ATR units (`0` = strictest)
+   - `/rsith 70/30` → reject BUY at/above 70, SELL at/below 30
+   - `/atrfloor 0.8` → reject stops tighter than 0.8 x ATR(M15)
+4. Re-run `/backtest` to confirm the improvement, then `/filtermode on`.
+5. Per channel: if a channel does better with filters off, use `/fema off @channel`
+   (or `"filters": false` in its config entry).
+
+Notes: the scan ignores a threshold that would block more than half of the
+trades (that is a shutdown, not a filter) and stays silent on samples smaller
+than 10 closed trades.
+
 ## Troubleshooting
 
 | Message / symptom | Cause | Fix |
@@ -310,6 +341,6 @@ Then restart it (close the bot window and run `start.bat`, or restart the schedu
 
 ## Telegram command reference
 
-**No password needed:** `/start` `/status` `/settings` `/channels` `/trades` `/report` `/backtest` `/filters` `/filtermode off|dry|on` `/fema /frsi /fatr on|off [@channel]` `/makeaion` `/makeaioff`
+**No password needed:** `/start` `/status` `/settings` `/channels` `/trades` `/report` `/backtest` `/filters` `/filtermode off|dry|on` `/fema /frsi /fatr on|off [@channel]` `/femabuf <0-5>` `/rsith <buy>/<sell>` `/atrfloor <0.1-3>` `/makeaion` `/makeaioff`
 
 **After `/change` + password:** `lot <size>` `tp <index>` `maxsl <pips>` `dailysl <pips>` `maxtrades <n>` `sleep` `wake` `chan on|off <@channel>` `done`

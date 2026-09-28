@@ -55,6 +55,9 @@ class TradeOutcome:
     leg: str = ""          # "1"/"2" for Brian dual-entry legs
     filter_blocked: bool = False  # filter simulation: signal would be blocked
     filter_reasons: str = ""      # failed filter names, ", "-joined
+    m_ema_atr: float = None       # (price - EMA200 H1) in ATR units at signal time
+    m_rsi: float = None           # RSI(14, M15) at signal time
+    m_sl_atr: float = None        # |entry - SL| in ATR(M15) units
 
 
 @dataclass
@@ -279,92 +282,238 @@ class Backtester:
     def _filter_failures(self, sig: Signal, signal_epoch: float):
         """Evaluate the live signal filters AS OF the signal time.
 
-        Returns None when simulation is unavailable (no settings / channel has
-        filters off entirely), otherwise a list of (name, detail) failures.
+        Returns (failures, metrics):
+          failures: None when simulation is unavailable (no settings / channel
+                    has filters off entirely), else a list of (name, detail).
+          metrics : the raw indicator values, kept so the report can re-score
+                    them against other thresholds.
+
         Every check FAILS OPEN on missing data, exactly like live trading —
         a data gap never counts as a block.
         """
         if not self.settings:
-            return None
+            return None, {}
         try:
             if self.settings.channel_filters_disabled(sig.source_channel):
-                return []
+                return [], {}
         except Exception:
-            return None
+            return None, {}
+
+        m = self._filter_metrics(sig, signal_epoch)
         fails = []
-        for fname, runner in (
-            ("ema200", self._flt_ema200),
-            ("rsi", self._flt_rsi),
-            ("atr_sl", self._flt_atr_sl),
-        ):
+        for fname, thr_key in (("ema200", "buffer_atr_mult"),
+                               ("rsi", None),
+                               ("atr_sl", "min_sl_atr_mult")):
             try:
                 cfg = self.settings.filter_config_for_channel(sig.source_channel, fname)
             except Exception:
                 cfg = None
             if not cfg or not cfg.get("enabled", True):
                 continue
-            detail = runner(cfg, sig, signal_epoch)
+            if fname == "rsi":
+                thr = (cfg.get("buy_max", 75), cfg.get("sell_min", 25))
+            else:
+                thr = cfg.get(thr_key, 0.3 if fname == "ema200" else 0.5)
+            detail = self._metric_failure(fname, thr, sig, m)
             if detail:
                 fails.append((fname, detail))
-        return fails
+        return fails, m
 
-    def _flt_ema200(self, cfg: dict, sig: Signal, signal_epoch: float):
-        bars = self._completed_bars(sig.symbol, str(cfg.get("timeframe", "H1")).upper(),
-                                    signal_epoch)
-        if bars is None or len(bars) < 201:
-            return None  # fail-open
-        closes = [float(r["close"]) for r in bars]
-        highs = [float(r["high"]) for r in bars]
-        lows = [float(r["low"]) for r in bars]
-        ema = ema_value(closes, 200)
-        if ema is None:
-            return None
-        atr = atr_wilder(highs, lows, closes, 14)
-        price = closes[-1]  # close of the last completed bar ~ signal price
-        atr_val = atr if atr and atr > 0 else abs(price) * 0.001
-        buffer = float(cfg.get("buffer_atr_mult", 0.3)) * atr_val
-        diff = price - ema
+    def _filter_metrics(self, sig: Signal, signal_epoch: float) -> dict:
+        """Raw indicator values at signal time (None when data is missing).
+
+        ema_atr : (price - EMA200 H1) in ATR(H1) units, signed
+        rsi     : RSI(14, M15)
+        sl_atr  : |entry - SL| in ATR(M15) units
+
+        Computing the metrics once lets the same numbers be re-scored against
+        many candidate thresholds (see _scan_table) without re-fetching data.
+        """
+        m = {"ema_atr": None, "rsi": None, "sl_atr": None}
+
+        bars = self._completed_bars(sig.symbol, "H1", signal_epoch)
+        if bars is not None and len(bars) >= 201:
+            closes = [float(r["close"]) for r in bars]
+            ema = ema_value(closes, 200)
+            atr = atr_wilder([float(r["high"]) for r in bars],
+                             [float(r["low"]) for r in bars], closes, 14)
+            if ema is not None:
+                price = closes[-1]
+                atr_val = atr if atr and atr > 0 else abs(price) * 0.001
+                m["ema_atr"] = (price - ema) / atr_val
+
+        bars15 = self._completed_bars(sig.symbol, "M15", signal_epoch)
+        if bars15 is not None:
+            closes15 = [float(r["close"]) for r in bars15]
+            rsi = rsi_wilder(closes15, 14)
+            if rsi is not None:
+                m["rsi"] = rsi
+            atr15 = atr_wilder([float(r["high"]) for r in bars15],
+                               [float(r["low"]) for r in bars15], closes15, 14)
+            if atr15 and atr15 > 0:
+                m["sl_atr"] = abs(float(sig.entry) - float(sig.stop_loss)) / atr15
+        return m
+
+    def _metric_failure(self, fname: str, thresholds, sig: Signal, m: dict):
+        """Apply one filter's thresholds to pre-computed metrics.
+
+        thresholds: for ema200 a float buffer (ATR units), for rsi a
+        (buy_max, sell_min) tuple, for atr_sl a float floor (ATR units).
+        Returns a failure detail string, or None when the check passes
+        (including when the metric is unavailable — fail open, like live).
+        """
         d = sig.direction.upper()
-        if d == "BUY" and diff < -buffer:
-            return f"price {price:.2f} below EMA200 {ema:.2f} (downtrend)"
-        if d == "SELL" and diff > buffer:
-            return f"price {price:.2f} above EMA200 {ema:.2f} (uptrend)"
+        if fname == "ema200":
+            v = m.get("ema_atr")
+            if v is None:
+                return None
+            if d == "BUY" and v < -float(thresholds):
+                return f"price {abs(v):.2f}xATR below EMA200"
+            if d == "SELL" and v > float(thresholds):
+                return f"price {v:.2f}xATR above EMA200"
+            return None
+        if fname == "rsi":
+            v = m.get("rsi")
+            if v is None:
+                return None
+            buy_max, sell_min = thresholds
+            if d == "BUY" and v >= float(buy_max):
+                return f"RSI {v:.1f} >= {float(buy_max):g}"
+            if d == "SELL" and v <= float(sell_min):
+                return f"RSI {v:.1f} <= {float(sell_min):g}"
+            return None
+        if fname == "atr_sl":
+            v = m.get("sl_atr")
+            if v is None:
+                return None
+            if v < float(thresholds):
+                return f"SL {v:.2f}xATR inside floor {float(thresholds):g}x"
+            return None
         return None
 
-    def _flt_rsi(self, cfg: dict, sig: Signal, signal_epoch: float):
-        period = int(cfg.get("period", 14))
-        bars = self._completed_bars(sig.symbol, str(cfg.get("timeframe", "M15")).upper(),
-                                    signal_epoch)
-        if bars is None:
-            return None
-        rsi = rsi_wilder([float(r["close"]) for r in bars], period)
-        if rsi is None:
-            return None
-        buy_max = float(cfg.get("buy_max", 75))
-        sell_min = float(cfg.get("sell_min", 25))
-        d = sig.direction.upper()
-        if d == "BUY" and rsi >= buy_max:
-            return f"RSI {rsi:.1f} >= {buy_max} (overbought)"
-        if d == "SELL" and rsi <= sell_min:
-            return f"RSI {rsi:.1f} <= {sell_min} (oversold)"
-        return None
+    # ------------------------------------------------------------------
+    # Threshold scan — which setting would actually have helped?
+    # ------------------------------------------------------------------
+    SCAN_MIN_TRADES = 10     # don't draw conclusions from tiny samples
+    SCAN_MAX_BLOCK_PCT = 0.5  # a "filter" that blocks most trades is a shutdown,
+                              # not a filter — such thresholds are ignored
+    SCAN_EMA_BUFFER = [0.0, 0.2, 0.3, 0.5, 1.0]
+    SCAN_RSI = [(60, 40), (65, 35), (70, 30), (75, 25)]
+    SCAN_ATR_FLOOR = [0.3, 0.5, 0.8, 1.0, 1.5]
 
-    def _flt_atr_sl(self, cfg: dict, sig: Signal, signal_epoch: float):
-        period = int(cfg.get("period", 14))
-        bars = self._completed_bars(sig.symbol, str(cfg.get("timeframe", "M15")).upper(),
-                                    signal_epoch)
-        if bars is None:
-            return None
-        atr = atr_wilder([float(r["high"]) for r in bars],
-                         [float(r["low"]) for r in bars],
-                         [float(r["close"]) for r in bars], period)
-        if not atr or atr <= 0:
-            return None
-        floor = float(cfg.get("min_sl_atr_mult", 0.5)) * atr
-        dist = abs(float(sig.entry) - float(sig.stop_loss))
-        if dist < floor:
-            return f"SL {dist:.2f} inside noise floor {floor:.2f}"
-        return None
+    def _scan_eval(self, closed, base_net, fname, thr):
+        """Replay the already-simulated trades against one candidate threshold."""
+        blocked = [o for o in closed
+                   if self._metric_failure(fname, thr, o,
+                                           {"ema_atr": o.m_ema_atr,
+                                            "rsi": o.m_rsi,
+                                            "sl_atr": o.m_sl_atr})]
+        blocked_ids = {id(o) for o in blocked}
+        kept = [o for o in closed if id(o) not in blocked_ids]
+        k_tp = sum(1 for o in kept if o.status == "tp_hit")
+        k_net = sum(o.profit_pips for o in kept)
+        b_tp = sum(1 for o in blocked if o.status == "tp_hit")
+        return {
+            "thr": thr,
+            "blocked": len(blocked),
+            "b_tp": b_tp,
+            "b_sl": len(blocked) - b_tp,
+            "kept_net": k_net,
+            "delta": k_net - base_net,
+            "kept_ids": {id(o) for o in kept},
+        }
+
+    def _scan_table(self, result) -> list:
+        """Show, per filter, the current threshold and the best one.
+
+        The SAME simulated trades are re-scored against candidate thresholds,
+        so the numbers are directly comparable — this is how to pick a
+        stricter setting that actually separates losers from winners instead
+        of just blocking more trades.
+        """
+        closed = [o for o in result.results if o.status in ("tp_hit", "sl_hit")]
+        if len(closed) < self.SCAN_MIN_TRADES or not self.settings:
+            return []
+        base_net = sum(o.profit_pips for o in closed)
+        base_tp = sum(1 for o in closed if o.status == "tp_hit")
+
+        def fmt_row(label, ev, current=False):
+            mark = " ←current" if current else ""
+            verdict = "✅" if ev["delta"] > 0 else ("➖" if ev["delta"] == 0 else "⚠️")
+            return (f"  {label}: blocks {ev['blocked']} ({ev['b_tp']}W/{ev['b_sl']}L) "
+                    f"net {base_net:+.0f}→{ev['kept_net']:+.0f} ({ev['delta']:+.0f}) "
+                    f"{verdict}{mark}")
+
+        lines = []
+        best = {}   # fname -> (label, ev)
+        ch = result.channel
+
+        specs = (
+            ("ema200", "buffer_atr_mult", self.SCAN_EMA_BUFFER,
+             lambda t: f"EMA200 buffer {t:g}x", 0.3),
+            ("rsi", None, self.SCAN_RSI,
+             lambda t: f"RSI {t[0]:g}/{t[1]:g}", (75, 25)),
+            ("atr_sl", "min_sl_atr_mult", self.SCAN_ATR_FLOOR,
+             lambda t: f"ATR floor {t:g}x", 0.5),
+        )
+        for fname, key, candidates, labeler, default in specs:
+            try:
+                cfg = self.settings.filter_config_for_channel(ch, fname)
+            except Exception:
+                cfg = None
+            if not cfg or not cfg.get("enabled", True):
+                continue  # filter off for this channel — nothing to scan
+
+            current = ((cfg.get("buy_max", 75), cfg.get("sell_min", 25))
+                       if fname == "rsi" else cfg.get(key, default))
+
+            evs = [(t, self._scan_eval(closed, base_net, fname, t)) for t in candidates]
+            max_block = len(closed) * self.SCAN_MAX_BLOCK_PCT
+            # keep only thresholds that actually block something without
+            # degenerating into "block everything"
+            evs = [e for e in evs if 0 < e[1]["blocked"] <= max_block]
+            if not evs:
+                continue
+            best_t, best_ev = max(evs, key=lambda e: (e[1]["delta"], -e[1]["blocked"]))
+
+            cur_ev = self._scan_eval(closed, base_net, fname, current)
+            cur_label = labeler(current)
+            best_label = labeler(best_t)
+            if best_label == cur_label or best_ev["delta"] <= 0:
+                # nothing beats the current setting
+                lines.append(fmt_row(cur_label, cur_ev, current=True))
+            else:
+                lines.append(fmt_row(cur_label, cur_ev, current=True))
+                lines.append(fmt_row(best_label, best_ev))
+                best[fname] = (best_t, best_ev, best_label)
+
+        if not lines:
+            return []
+
+        out = ["", "📐 Threshold scan (same trades, different thresholds):"]
+        out += lines
+
+        # combined effect of the best thresholds
+        if best:
+            keep_ids = None
+            for fname, (t, ev, _lbl) in best.items():
+                ids = ev["kept_ids"]
+                keep_ids = ids if keep_ids is None else (keep_ids & ids)
+            kept = [o for o in closed if id(o) in (keep_ids or set())]
+            k_tp = sum(1 for o in kept if o.status == "tp_hit")
+            k_sl = len(kept) - k_tp
+            k_net = sum(o.profit_pips for o in kept)
+            blocked = len(closed) - len(kept)
+            b_tp = base_tp - k_tp
+            delta = k_net - base_net
+            combo = " + ".join(f"{lbl}" for _t, _ev, lbl in best.values())
+            verdict = "✅ HELPS" if delta > 0 else ("➖ neutral" if delta == 0 else "⚠️ HURTS")
+            out.append(
+                f"  🏆 Best combo ({combo}): blocks {blocked} ({b_tp}W/{blocked - b_tp}L), "
+                f"net {base_net:+.0f}→{k_net:+.0f} ({delta:+.0f}) {verdict}"
+            )
+            out.append("  Apply with /femabuf, /rsith, /atrfloor — or /filtermode on to enforce.")
+        return out
 
     # ------------------------------------------------------------------
     # Live-rule sanity (mirrors TradeManager.process_signal)
@@ -604,7 +753,7 @@ class Backtester:
             # Filter simulation: evaluate on the RAW signal, before channel
             # adjustments — exactly where the live validator runs. A signal is
             # "blocked" if any enabled filter would have rejected it.
-            flt_fails = self._filter_failures(sig, signal_epoch)
+            flt_fails, flt_metrics = self._filter_failures(sig, signal_epoch)
             if flt_fails is not None:
                 result.filter_sim = True
             flt_reasons = ", ".join(n for n, _ in flt_fails) if flt_fails else ""
@@ -620,7 +769,10 @@ class Backtester:
                 result.results.append(TradeOutcome(
                     direction=sig.direction, entry=sig.entry, tp=0.0,
                     sl=sig.stop_loss, status="no_data", signal_time=stamp,
-                    filter_blocked=flt_blocked, filter_reasons=flt_reasons))
+                    filter_blocked=flt_blocked, filter_reasons=flt_reasons,
+                    m_ema_atr=flt_metrics.get("ema_atr"),
+                    m_rsi=flt_metrics.get("rsi"),
+                    m_sl_atr=flt_metrics.get("sl_atr")))
                 continue
 
             self._apply_channel_adjustments(sig, rates, signal_epoch)
@@ -637,7 +789,10 @@ class Backtester:
                 result.results.append(TradeOutcome(
                     direction=sig.direction, entry=sig.entry, tp=0.0,
                     sl=sig.stop_loss, status="rejected", signal_time=stamp,
-                    filter_blocked=flt_blocked, filter_reasons=flt_reasons))
+                    filter_blocked=flt_blocked, filter_reasons=flt_reasons,
+                    m_ema_atr=flt_metrics.get("ema_atr"),
+                    m_rsi=flt_metrics.get("rsi"),
+                    m_sl_atr=flt_metrics.get("sl_atr")))
                 self.logger.debug(
                     f"Backtest: {sig.source_channel} signal rejected ({reject_reason})"
                 )
@@ -658,6 +813,9 @@ class Backtester:
                 o.signal_time = stamp
                 o.filter_blocked = flt_blocked
                 o.filter_reasons = flt_reasons
+                o.m_ema_atr = flt_metrics.get("ema_atr")
+                o.m_rsi = flt_metrics.get("rsi")
+                o.m_sl_atr = flt_metrics.get("sl_atr")
                 result.results.append(o)
                 result.trades += 1
                 if o.status == "tp_hit":
@@ -776,6 +934,7 @@ class Backtester:
                 f"  Reasons: {reasons or 'none'}",
                 f"  {verdict}",
             ]
+            lines += self._scan_table(result)
 
         recent = result.results[-15:]
         if recent:
