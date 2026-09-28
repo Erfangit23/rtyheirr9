@@ -69,6 +69,7 @@ class BacktestResult:
     not_filled: int = 0
     cancelled: int = 0
     no_data: int = 0
+    rejected: int = 0        # signals live trading would refuse (wrong side / SL cap)
     winrate: float = 0.0
     avg_rr: float = 0.0
     gross_profit_pips: float = 0.0
@@ -189,6 +190,9 @@ class Backtester:
         "@Signal_Atlas": 2,
         "@Eliz_fxac_ademy1": 1,
     }
+
+    # khan family: TP1 target + cancel the pending order if TP1 is reached unfilled
+    KHAN_CHANNELS = ("@forexkhan", "@khanbours", "@khanbourse", "@khanbouse")
 
     def _channel_tp_index(self, channel: str, n_tps: int) -> int:
         idx = self.TP_RULES.get(channel, 2)  # default TP2 like live default
@@ -363,9 +367,44 @@ class Backtester:
         return None
 
     # ------------------------------------------------------------------
+    # Live-rule sanity (mirrors TradeManager.process_signal)
+    # ------------------------------------------------------------------
+    MAX_SL_PIPS = 150  # live default max_sl_pips
+
+    def _sanity_reject(self, sig: Signal, enforce_sl_cap: bool = True):
+        """Return a reason when live trading would REFUSE this signal, else None.
+
+        Live rejects SL/TP on the wrong side of the entry, and (except for the
+        Brian dual-entry strategy, which is a breakeven play) an SL wider than
+        the cap. The backtest used to simulate those signals anyway — and since
+        a wrong-side TP is touched on the very first bar, they were counted as
+        instant wins worth tens of thousands of pips, wrecking the totals.
+        """
+        entry = float(sig.entry)
+        d = sig.direction.upper()
+        if d == "BUY":
+            if sig.stop_loss >= entry:
+                return "SL on the wrong side for BUY"
+            if any(tp <= entry for tp in sig.take_profits):
+                return "TP on the wrong side for BUY"
+        elif d == "SELL":
+            if sig.stop_loss <= entry:
+                return "SL on the wrong side for SELL"
+            if any(tp >= entry for tp in sig.take_profits):
+                return "TP on the wrong side for SELL"
+        if enforce_sl_cap:
+            sl_pips = abs(entry - sig.stop_loss) / self.PIP
+            if sl_pips > self.MAX_SL_PIPS:
+                return f"SL {sl_pips:.0f} pips > {self.MAX_SL_PIPS} cap"
+        return None
+
+    # ------------------------------------------------------------------
     # Simulation
     # ------------------------------------------------------------------
-    def _simulate_single(self, direction, entry, tp, sl, rates, signal_epoch) -> TradeOutcome:
+    def _simulate_single(self, direction, entry, tp, sl, rates, signal_epoch,
+                         cancel_at=None) -> TradeOutcome:
+        """cancel_at: live cancel rule — if price reaches this level while the
+        order is STILL unfilled, the pending order is cancelled (khan channels)."""
         entry_window = self.ENTRY_WINDOW_MIN * 60
         tp_window = self.TP_SL_WINDOW_HOURS * 3600
         risk = abs(entry - sl) / self.PIP
@@ -389,6 +428,15 @@ class Backtester:
                 elif bar["low"] <= entry:
                     filled_epoch = t
                 if filled_epoch is None:
+                    # Still unfilled: the live rule for khan channels cancels the
+                    # pending order once price reaches TP1 without filling.
+                    if cancel_at is not None and (
+                        (direction == "SELL" and bar["low"] <= cancel_at) or
+                        (direction == "BUY" and bar["high"] >= cancel_at)
+                    ):
+                        out.status = "cancelled"
+                        out.close_time = self._fmt_time(t)
+                        return out
                     continue
                 out.entry_time = self._fmt_time(filled_epoch)
             # From the fill bar onward; SL checked first (conservative)
@@ -580,13 +628,31 @@ class Backtester:
             is_brian = (sig.source_channel == "@BrianTradingForex"
                         and len(getattr(sig, "entries", []) or []) >= 2
                         and len(sig.take_profits) >= 2)
+
+            # Live refuses these outright — simulating them would book fantasy
+            # trades (a wrong-side TP is "touched" on the first bar).
+            reject_reason = self._sanity_reject(sig, enforce_sl_cap=not is_brian)
+            if reject_reason:
+                result.rejected += 1
+                result.results.append(TradeOutcome(
+                    direction=sig.direction, entry=sig.entry, tp=0.0,
+                    sl=sig.stop_loss, status="rejected", signal_time=stamp,
+                    filter_blocked=flt_blocked, filter_reasons=flt_reasons))
+                self.logger.debug(
+                    f"Backtest: {sig.source_channel} signal rejected ({reject_reason})"
+                )
+                continue
+
             if is_brian:
                 outcomes = self._simulate_brian(sig, rates, signal_epoch)
             else:
+                # khan channels cancel the pending order if TP1 is reached unfilled
+                cancel_at = (sig.take_profits[0]
+                             if sig.source_channel in self.KHAN_CHANNELS else None)
                 outcomes = [self._simulate_single(
                     sig.direction.upper(), sig.entry,
                     sig.take_profits[out_tp - 1], sig.stop_loss,
-                    rates, signal_epoch)]
+                    rates, signal_epoch, cancel_at=cancel_at)]
 
             for o in outcomes:
                 o.signal_time = stamp
@@ -619,6 +685,8 @@ class Backtester:
         # --- Filter-simulation aggregation ---
         if result.filter_sim:
             for o in result.results:
+                if o.status == "rejected":
+                    continue  # live would refuse these regardless of filters
                 if o.filter_blocked:
                     result.filter_blocked += 1
                     if o.status == "tp_hit":
@@ -642,6 +710,8 @@ class Backtester:
         return result
 
     def _tp_note(self, channel_id: str) -> str:
+        if channel_id in self.KHAN_CHANNELS:
+            return "TP1, cancel if TP1 reached unfilled (live rules)"
         if channel_id == "@BrianTradingForex":
             return "dual entry: entries +5p closer, closer->TP1(-10p), farther->TP2(cap 150p, breakeven), cancel at TP2 unfilled"
         if channel_id in ("@Gulljanali17", "@bttesteamin"):
@@ -665,7 +735,9 @@ class Backtester:
             "",
             f"Trades: {result.trades} | Filled: {filled} ({fill_rate:.0f}%)",
             f"  ✅ TP: {result.tp_hit} | ❌ SL: {result.sl_hit} | ⏳ Expired: {result.expired}",
-            f"  ⚪ Not filled: {result.not_filled} | 🗑️ Cancelled before fill: {result.cancelled} | ⚠️ No data: {result.no_data}",
+            f"  ⚪ Not filled: {result.not_filled} | 🗑️ Cancelled before fill: {result.cancelled}",
+            f"  🚫 Rejected by live rules (wrong side / SL cap): {result.rejected}"
+            f" | ⚠️ No data: {result.no_data}",
             "",
             f"🎯 Winrate: {result.winrate:.1f}% ({result.tp_hit}W / {result.sl_hit}L)",
             f"📊 Avg RR: 1:{result.avg_rr:.2f}",
@@ -721,6 +793,9 @@ class Backtester:
                 elif r.status == "cancelled":
                     icon = "🗑️"
                     detail = "cancelled (TP1 before fill)"
+                elif r.status == "rejected":
+                    icon = "🚫"
+                    detail = "rejected (live rules)"
                 elif r.status == "no_data":
                     icon = "⚠️"
                     detail = "no price data"

@@ -28,6 +28,14 @@ from typing import Optional
 
 _logger = logging.getLogger("xau_trader")
 
+# A parsed level must sit within this fraction of the entry price. Channel
+# messages contain numbers that are NOT prices (pip counts like "100 pips",
+# dates, trade numbers); if one is captured as a level the signal becomes
+# nonsense — e.g. a BUY whose "TP" is 100 while gold trades at 4200 looks
+# like an instant 40,000-pip winner. 10% of the gold price is far beyond any
+# real level, so nothing legitimate is ever dropped.
+MAX_LEVEL_DRIFT = 0.10
+
 
 @dataclass
 class Signal:
@@ -561,6 +569,30 @@ def _try_parse(parser, text: str, channel: str) -> Optional[Signal]:
         return None
 
 
+def _clean_levels(sig: Optional[Signal]) -> Optional[Signal]:
+    """Drop implausible levels from a parsed signal (see MAX_LEVEL_DRIFT).
+
+    Unusable TPs are removed (the rest of the signal stays valid); the signal
+    is discarded when its SL is implausible or no TP survives.
+    """
+    if sig is None or not sig.entry or sig.entry <= 0:
+        return None
+    limit = sig.entry * MAX_LEVEL_DRIFT
+    if sig.stop_loss <= 0 or abs(sig.stop_loss - sig.entry) > limit:
+        return None
+    tps = [tp for tp in sig.take_profits if tp > 0 and abs(tp - sig.entry) <= limit]
+    if not tps:
+        return None
+    if len(tps) != len(sig.take_profits):
+        _logger.warning(
+            f"Dropped {len(sig.take_profits) - len(tps)} implausible TP level(s) "
+            f"from a {sig.source_channel} signal (entry {sig.entry}): "
+            f"{sig.take_profits} -> {tps}"
+        )
+    sig.take_profits = tps
+    return sig
+
+
 def parse_signal(text: str, channel: str, fmt: str = "auto") -> Optional[Signal]:
     """
     Parse a signal message.
@@ -573,13 +605,13 @@ def parse_signal(text: str, channel: str, fmt: str = "auto") -> Optional[Signal]
         return None
 
     if fmt != "auto" and fmt in PARSERS:
-        result = _try_parse(PARSERS[fmt], text, channel)
+        result = _clean_levels(_try_parse(PARSERS[fmt], text, channel))
         if result:
             return result
 
     # Auto: try all
     for parser_name, parser in PARSERS.items():
-        result = _try_parse(parser, text, channel)
+        result = _clean_levels(_try_parse(parser, text, channel))
         if result:
             return result
 

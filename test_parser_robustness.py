@@ -132,6 +132,21 @@ def main():
            sig is not None and sig.entry == 4063.0 and sig.stop_loss == 4057.0
            and sig.take_profits == [4068.0])
 
+    print("\n-- implausible levels (pip counts etc.) are dropped or rejected --")
+    # "TP 100" is a pip count, not a price: drop it, keep the real TP
+    sig = parse_signal("XAUUSD Sell 4064\n\nTP 4059\nTP 100\n\nSL 4074", "@test", "format3")
+    _check(failures, f"garbage TP dropped, real TP kept (got {sig.take_profits if sig else None})",
+           sig is not None and sig.take_profits == [4059.0])
+
+    # an implausible SL makes the whole signal unusable
+    sig = parse_signal("XAUUSD Sell 4064\n\nTP 4059\n\nSL 100", "@test", "format3")
+    _check(failures, "implausible SL -> signal discarded", sig is None)
+
+    # a normal signal is untouched by the plausibility filter
+    sig = parse_signal(GOOD["format3"], "@test", "format3")
+    _check(failures, "normal signal unaffected",
+           sig is not None and sig.take_profits == [4059.0, 4054.0, 4049.0])
+
     print("=" * 40)
     if failures:
         print(f"RESULT: {len(failures)} check(s) FAILED")
