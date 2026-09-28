@@ -6,13 +6,13 @@ Complete, step-by-step setup on a Windows VPS. Follow it top to bottom.
 
 ## Step 0 — What the VPS needs
 
-| Requirement | Notes |
-|---|---|
-| **Windows** VPS | Windows Server 2016+ or Windows 10/11. The `MetaTrader5` Python package only runs on Windows. |
-| **MetaTrader 5** | Installed, **running**, and **logged in** to your account (demo or real). The **Algo Trading** button in the toolbar must be **green**. |
-| **XAUUSD in Market Watch** | Right-click Market Watch → Symbols → find gold → **Show**. |
-| **Python 3.10+** | During install, tick **"Add python.exe to PATH"**. |
-| **Stable internet** | The bot needs Telegram + the broker connection 24/7. |
+| Requirement                | Notes                                                                                                                                   |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **Windows** VPS            | Windows Server 2016+ or Windows 10/11. The `MetaTrader5` Python package only runs on Windows.                                           |
+| **MetaTrader 5**           | Installed, **running**, and **logged in** to your account (demo or real). The **Algo Trading** button in the toolbar must be **green**. |
+| **XAUUSD in Market Watch** | Right-click Market Watch → Symbols → find gold → **Show**.                                                                              |
+| **Python 3.10+**           | During install, tick **"Add python.exe to PATH"**.                                                                                      |
+| **Stable internet**        | The bot needs Telegram + the broker connection 24/7.                                                                                    |
 
 Stop the VPS from sleeping (run CMD **as Administrator**):
 
@@ -44,12 +44,14 @@ No Git installed? Open the GitHub page → **Code → Download ZIP** → extract
 install.bat
 ```
 
-This creates a `venv` folder and installs `MetaTrader5`, `telethon` and `openai`.
+This creates a `venv` folder and installs `MetaTrader5`, `telethon` and `openai`.  
 Verify it worked:
 
 ```cmd
 venv\Scripts\python -c "import MetaTrader5, telethon; print('deps OK')"
 ```
+
+
 
 ---
 
@@ -64,13 +66,13 @@ notepad config.json
 
 ### 3.1 Where each credential comes from
 
-| Value | Where to get it |
-|---|---|
-| `api_id`, `api_hash` | https://my.telegram.org/apps (log in with your phone, create an app) |
-| `phone` | Your own phone number, international format: `+98912...` |
-| `bot_token` | Telegram → **@BotFather** → `/newbot` → copy the token |
-| `authorized_user_ids` | Telegram → **@userinfobot** → send `/start` → it replies your numeric ID |
-| MT5 `login` / `password` / `server` | The MT5 login window. Copy `server` **exactly** as written. |
+| Value                               | Where to get it                                                          |
+| ----------------------------------- | ------------------------------------------------------------------------ |
+| `api_id`, `api_hash`                | <https://my.telegram.org/apps> (log in with your phone, create an app)   |
+| `phone`                             | Your own phone number, international format: `+98912...`                 |
+| `bot_token`                         | Telegram → **@BotFather** → `/newbot` → copy the token                   |
+| `authorized_user_ids`               | Telegram → **@userinfobot** → send `/start` → it replies your numeric ID |
+| MT5 `login` / `password` / `server` | The MT5 login window. Copy `server` **exactly** as written.              |
 
 ### 3.2 Complete example (11 channels pre-filled)
 
@@ -134,10 +136,11 @@ notepad config.json
 
 **`telegram`** — your personal Telegram account (not the bot). Used to read the signal channels. On the first run you enter a login code once; afterwards the `trader_session.session` file remembers it.
 
-**`report_bot`** — the bot that sends you reports and receives your commands.
+**`report_bot`** — the bot that sends you reports and receives your commands.  
 `authorized_user_ids` is a security list: **only these IDs can control the bot.** Put only your own.
 
 **`mt5`**
+
 - `login` / `password` / `server` — your MT5 account. For a real account use the real values; the account must also be logged in inside the MT5 terminal.
 - `terminal_path` — leave `""` if MT5 is installed in the default location.
 - `symbol` — **critical**: the exact gold symbol name your broker uses (`XAUUSD`, `XAUUSD.pro`, `GOLD`, …). If it is wrong the bot cannot see any position and every order fails.
@@ -145,36 +148,38 @@ notepad config.json
 **`ai`** — optional. Put your NVIDIA API key here to enable AI signal parsing + Persian commentary. Leave empty and the bot simply uses the regex parsers. This file is gitignored, so the key stays on your VPS only.
 
 **`channels`** — the signal channels to monitor. Your Telegram account must be a member of each one.
+
 - `id` — the channel username **with** `@`.
 - `format` — which parser to use (see the table in 3.4). Use `"auto"` if unsure.
 - Optional per channel: `"active": false` (temporarily disable) and `"filters": false` (skip the quality filters for that channel only).
 
 **`trading`**
-| Field | Meaning |
-|---|---|
-| `lot_size` | Base lot per trade (0.01 → about $1 per 10 pips on gold) |
-| `default_tp_index` | Which TP to use for channels without a special rule |
-| `max_sl_pips` | Reject a signal whose stop distance is larger than this |
-| `max_daily_sl_pips` | Daily loss cap; once today's realised loss reaches it, new trades stop until the next day (`0` = off) |
-| `max_open_trades` | Max simultaneous gold trades, positions + pending (`0` = unlimited) |
-| `bot_active` | `false` = sleep, place nothing |
-| `settings_password` | Password for `/change` in Telegram — **change it** |
 
-**`validation`** — the signal quality filters (EMA200 trend, RSI exhaustion, ATR stop floor).
+| Field               | Meaning                                                                                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------- |
+| `lot_size`          | Base lot per trade (0.01 → about $1 per 10 pips on gold)                                              |
+| `default_tp_index`  | Which TP to use for channels without a special rule                                                   |
+| `max_sl_pips`       | Reject a signal whose stop distance is larger than this                                               |
+| `max_daily_sl_pips` | Daily loss cap; once today's realised loss reaches it, new trades stop until the next day (`0` = off) |
+| `max_open_trades`   | Max simultaneous gold trades, positions + pending (`0` = unlimited)                                   |
+| `bot_active`        | `false` = sleep, place nothing                                                                        |
+| `settings_password` | Password for `/change` in Telegram — **change it**                                                    |
+
+**`validation`** — the signal quality filters (EMA200 trend, RSI exhaustion, ATR stop floor).  
 `"mode"` is `off`, `dry_run` (report only, still trade) or `on` (block). **Start with `dry_run`** and check `/backtest` per channel before switching to `on`.
 
 ### 3.4 Channel format reference
 
-| Format | Message style |
-|---|---|
-| `format1` | `📊XAUUSD SELL NOW ( 4167 )` + `📊TARGET 1 ( 4163 )` + `🚫 STOP LOSS ( 4177 )` |
-| `format2` | `XAUUSD SELL NOW 4171:::4180` + `✔️ Tp1 🔽 4166` + `❌ SL 4186` |
-| `format3` | `XAUUSD Sell 4064` + `TP 4059` + `SL 4074` (plain, no emoji) |
-| `format4` | `🧑‍💻 XAU/USD Buy 4063 - 4060` + `📌 Stoploss : 4057` + `Take Profit : 4068` |
-| `format5` | `XAUUSD ( اسکلپ )` + `Buy now : 4090 - 4086` + `Tp1 : 4096` + `Sl : 4080` |
+| Format    | Message style                                                                     |
+| --------- | --------------------------------------------------------------------------------- |
+| `format1` | `📊XAUUSD SELL NOW ( 4167 )` + `📊TARGET 1 ( 4163 )` + `🚫 STOP LOSS ( 4177 )`    |
+| `format2` | `XAUUSD SELL NOW 4171:::4180` + `✔️ Tp1 🔽 4166` + `❌ SL 4186`                    |
+| `format3` | `XAUUSD Sell 4064` + `TP 4059` + `SL 4074` (plain, no emoji)                      |
+| `format4` | `🧑‍💻 XAU/USD Buy 4063 - 4060` + `📌 Stoploss : 4057` + `Take Profit : 4068`     |
+| `format5` | `XAUUSD ( اسکلپ )` + `Buy now : 4090 - 4086` + `Tp1 : 4096` + `Sl : 4080`         |
 | `format6` | `⚜️ XAUUSD - BUY NOW` + `🛒 Entry : 4081` + `🎯 Targets :` + `🔺 Stoploss : 4076` |
-| `format7` | `XAUUSD \| SELL 📈` + `Entry : 4043` + `✔️TP1: 4039` + `❌SL : 4052` |
-| `format8` | `GOLD Buy Limit 4252-4253` + `TP 4259` + `SL 4246` |
+| `format7` | `XAUUSD \| SELL 📈` + `Entry : 4043` + `✔️TP1: 4039` + `❌SL : 4052`               |
+| `format8` | `GOLD Buy Limit 4252-4253` + `TP 4259` + `SL 4246`                                |
 
 > Per-channel rules (TP index, entry/SL adjustments, step-up SL, dual entry, cooldowns) are built into the code by channel name — you do not configure them.
 
@@ -194,13 +199,13 @@ The first time, Telegram sends you a login code — type it in the console windo
 
 In Telegram, **send `/start` to your own report bot first** (a bot cannot message you until you start it). Then:
 
-| Command | Expected |
-|---|---|
-| `/status` | `Bot: ☀️ ACTIVE`, `MT5: ✅ Connected`, balance/equity |
-| `/settings` | lot 0.01, TP2, max SL 150, daily 500, Max Open Trades: 5 |
-| `/channels` | all 11 channels with ✅ and per-channel stats |
-| `/trades` | open positions and pending orders |
-| `/report` | today's deals + `Daily loss: X/500 pips` |
+| Command     | Expected                                                   |
+| ----------- | ---------------------------------------------------------- |
+| `/status`   | `Bot: ☀️ ACTIVE`, `MT5: ✅ Connected`, balance/equity       |
+| `/settings` | lot 0.01, TP2, max SL 150, daily 500, Max Open Trades: 5   |
+| `/channels` | all 11 channels with ✅ and per-channel stats               |
+| `/trades`   | open positions and pending orders                          |
+| `/report`   | today's deals + `Daily loss: X/500 pips`                   |
 | `/backtest` | pick a channel → historical winrate + 🧪 filter simulation |
 
 And check the log file:
@@ -248,18 +253,20 @@ cd C:\xau-trader-bot
 git pull
 ```
 
-Then restart it (close the bot window and run `start.bat`, or restart the scheduled task).
+Then restart it (close the bot window and run `start.bat`, or restart the scheduled task).  
 `config.json` is never overwritten by an update, because it is not part of the repository.
 
 ---
 
 ## Files the bot creates (back these up)
 
-| Path | What it is |
-|---|---|
-| `config.json` | Your settings and credentials |
-| `trader_session.session` | Telegram login session |
-| `data\trades.json` | Trade history |
+| Path                     | What it is                    |
+| ------------------------ | ----------------------------- |
+| `config.json`            | Your settings and credentials |
+| `trader_session.session` | Telegram login session        |
+| `data\trades.json`       | Trade history                 |
+
+
 | `data\linked_orders.json` | Breakeven links (Brian dual entry) |
 | `data\sl_cooldown.json` | Per-channel SL cooldowns |
 | `logs\trader_YYYYMMDD.log` | Daily log |

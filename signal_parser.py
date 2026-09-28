@@ -21,9 +21,12 @@ XAUUSD SELL NOW 4171:::4180
 ❌ SL 4186 100% Sure Call
 """
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Optional
+
+_logger = logging.getLogger("xau_trader")
 
 
 @dataclass
@@ -54,7 +57,7 @@ def parse_format1(text: str, channel: str) -> Optional[Signal]:
     # Direction and entry: XAUUSD SELL NOW ( 4167 ) ✅
     # The 📊 emoji may or may not be present on the first line
     dir_match = re.search(
-        r"XAUUSD\s+(BUY|SELL)\s+NOW\s*\(\s*([\d.]+)\s*\)",
+        r"XAUUSD\s+(BUY|SELL)\s+NOW\s*\(\s*(\d[\d.]*)\s*\)",
         full_text,
         re.IGNORECASE,
     )
@@ -65,13 +68,13 @@ def parse_format1(text: str, channel: str) -> Optional[Signal]:
     entry = float(dir_match.group(2))
 
     # Stop loss: 🚫 STOP LOSS ( 4177 )
-    sl_match = re.search(r"STOP\s*LOSS\s*\(\s*([\d.]+)\s*\)", full_text, re.IGNORECASE)
+    sl_match = re.search(r"STOP\s*LOSS\s*\(\s*(\d[\d.]*)\s*\)", full_text, re.IGNORECASE)
     if not sl_match:
         return None
     stop_loss = float(sl_match.group(1))
 
     # Targets: 📊TARGET 1 ( 4163 )✅
-    tp_matches = re.findall(r"TARGET\s*\d+\s*\(\s*([\d.]+)\s*\)", full_text, re.IGNORECASE)
+    tp_matches = re.findall(r"TARGET\s*\d+\s*\(\s*(\d[\d.]*)\s*\)", full_text, re.IGNORECASE)
     if not tp_matches:
         return None
 
@@ -95,7 +98,7 @@ def parse_format2(text: str, channel: str) -> Optional[Signal]:
     # Direction and entry: XAUUSD SELL NOW 4171:::4180
     # The ::: separates entry from SL
     dir_match = re.search(
-        r"XAUUSD\s+(BUY|SELL)\s+NOW\s+([\d.]+)\s*:::\s*([\d.]+)",
+        r"XAUUSD\s+(BUY|SELL)\s+NOW\s+(\d[\d.]*)\s*:::\s*(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -107,10 +110,10 @@ def parse_format2(text: str, channel: str) -> Optional[Signal]:
     stop_loss = float(dir_match.group(3))
 
     # Take profits: ✔️ Tp1 🔽 4166
-    tp_matches = re.findall(r"Tp\s*\d+\s*[🔽🔼🔻🔺]\s*([\d.]+)", full_text, re.IGNORECASE)
+    tp_matches = re.findall(r"Tp\s*\d+\s*[🔽🔼🔻🔺]\s*(\d[\d.]*)", full_text, re.IGNORECASE)
     if not tp_matches:
         # Try alternate without arrow
-        tp_matches = re.findall(r"Tp\s*\d+\s+([\d.]+)", full_text, re.IGNORECASE)
+        tp_matches = re.findall(r"Tp\s*\d+\s+(\d[\d.]*)", full_text, re.IGNORECASE)
     if not tp_matches:
         return None
 
@@ -145,7 +148,7 @@ def parse_format3(text: str, channel: str) -> Optional[Signal]:
     # Direction and entry: XAUUSD Sell 4064
     # Also handles: XAUUSD buy 4029, XAUUSD BUY 4029, etc.
     dir_match = re.search(
-        r"XAUUSD\s+(BUY|SELL)\s+(?:NOW\s+)?(?:@\s*)?([\d.]+)",
+        r"XAUUSD\s+(BUY|SELL)\s+(?:NOW\s+)?(?:@\s*)?(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -156,13 +159,13 @@ def parse_format3(text: str, channel: str) -> Optional[Signal]:
     entry = float(dir_match.group(2))
 
     # Stop loss: SL 4074, SL: 4074, Stop Loss 4074, etc.
-    sl_match = re.search(r"(?:SL|STOP\s*LOSS)\s*:?\s+(\d[\d.]+)", full_text, re.IGNORECASE)
+    sl_match = re.search(r"(?:SL|STOP\s*LOSS)\s*:?\s+(\d[\d.]*)", full_text, re.IGNORECASE)
     if not sl_match:
         return None
     stop_loss = float(sl_match.group(1))
 
     # Take profits: TP 4059, TP: 4059, Tp1 4059, Take Profit 4059, etc.
-    tp_matches = re.findall(r"(?:TP|TAKE\s*PROFIT)\s*\d*\s*:?\s+(\d[\d.]+)", full_text, re.IGNORECASE)
+    tp_matches = re.findall(r"(?:TP|TAKE\s*PROFIT)\s*\d*\s*:?\s+(\d[\d.]*)", full_text, re.IGNORECASE)
     if not tp_matches:
         return None
 
@@ -196,7 +199,7 @@ def parse_format4(text: str, channel: str) -> Optional[Signal]:
     # Direction and entries: XAU/USD Buy 4063 - 4060 or XAUUSD Buy 4063 - 4060
     # Can have emoji before it
     dir_match = re.search(
-        r"XAU[/\s]*USD\s+(BUY|SELL)\s+([\d.]+)\s*[-–]\s*([\d.]+)",
+        r"XAU[/\s]*USD\s+(BUY|SELL)\s+(\d[\d.]*)\s*[-–]\s*(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -212,7 +215,7 @@ def parse_format4(text: str, channel: str) -> Optional[Signal]:
 
     # Stop loss: Stoploss : 4057, SL : 4057, etc.
     sl_match = re.search(
-        r"(?:STOP\s*LOSS|SL|STOPLOSS)\s*:?\s*([\d.]+)",
+        r"(?:STOP\s*LOSS|SL|STOPLOSS)\s*:?\s*(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -222,7 +225,7 @@ def parse_format4(text: str, channel: str) -> Optional[Signal]:
 
     # Take profits: Take Profit : 4068, Take Profit : 4085
     tp_matches = re.findall(
-        r"TAKE\s*PROFIT\s*:?\s*([\d.]+)",
+        r"TAKE\s*PROFIT\s*:?\s*(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -265,7 +268,7 @@ def parse_format5(text: str, channel: str) -> Optional[Signal]:
     # Direction and entry: Buy now : 4090 - 4086  or  Sell now : 4090 - 4086
     # Can also be single entry: Buy now : 4090
     dir_match = re.search(
-        r"(?:BUY|SELL)\s+NOW\s*:?\s*([\d.]+)(?:\s*[-–]\s*([\d.]+))?",
+        r"(?:BUY|SELL)\s+NOW\s*:?\s*(\d[\d.]*)(?:\s*[-–]\s*(\d[\d.]*))?",
         full_text,
         re.IGNORECASE,
     )
@@ -277,7 +280,7 @@ def parse_format5(text: str, channel: str) -> Optional[Signal]:
 
     # Stop loss: Sl : 4080 ( 80 pip )
     sl_match = re.search(
-        r"(?:SL|STOP\s*LOSS)\s*:?\s*([\d.]+)",
+        r"(?:SL|STOP\s*LOSS)\s*:?\s*(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -288,7 +291,7 @@ def parse_format5(text: str, channel: str) -> Optional[Signal]:
     # Take profits: Tp1 : 4096, Tp2 : 4106, etc.
     # Skip "open" as a TP value
     tp_matches = re.findall(
-        r"TP\s*\d+\s*:?\s*(\d[\d.]+)",
+        r"TP\s*\d+\s*:?\s*(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -340,7 +343,7 @@ def parse_format6(text: str, channel: str) -> Optional[Signal]:
 
     # Entry: 🛒 Entry : 4081
     entry_match = re.search(
-        r"ENTRY\s*:?\s*([\d.]+)",
+        r"ENTRY\s*:?\s*(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -350,7 +353,7 @@ def parse_format6(text: str, channel: str) -> Optional[Signal]:
 
     # Stop loss: 🔺 Stoploss : 4076
     sl_match = re.search(
-        r"(?:STOPLOSS|STOP\s*LOSS|SL)\s*:?\s*([\d.]+)",
+        r"(?:STOPLOSS|STOP\s*LOSS|SL)\s*:?\s*(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -417,7 +420,7 @@ def parse_format7(text: str, channel: str) -> Optional[Signal]:
 
     # Entry: Entry : 4043
     entry_match = re.search(
-        r"ENTRY\s*:?\s*([\d.]+)",
+        r"ENTRY\s*:?\s*(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -427,7 +430,7 @@ def parse_format7(text: str, channel: str) -> Optional[Signal]:
 
     # Stop loss: ❌SL : 4052, SL : 4052
     sl_match = re.search(
-        r"(?:SL|STOP\s*LOSS)\s*:?\s*([\d.]+)",
+        r"(?:SL|STOP\s*LOSS)\s*:?\s*(\d[\d.]*)",
         full_text,
         re.IGNORECASE,
     )
@@ -493,7 +496,7 @@ def parse_format8(text: str, channel: str) -> Optional[Signal]:
         entries = [entry, entry2]
     else:
         # Try single entry value
-        entry_match = re.search(r"(?:ENTRY|ENTRY\s*[::])?\s*([\d.]+)", after_dir)
+        entry_match = re.search(r"(?:ENTRY|ENTRY\s*[::])?\s*(\d[\d.]*)", after_dir)
         if entry_match:
             entry = float(entry_match.group(1))
             entries = [entry]
@@ -501,7 +504,7 @@ def parse_format8(text: str, channel: str) -> Optional[Signal]:
             return None
 
     # Stop loss: SL 4246
-    sl_match = re.search(r"(?:SL|STOP\s*LOSS)\s*[:]?\s*([\d.]+)", full_text, re.IGNORECASE)
+    sl_match = re.search(r"(?:SL|STOP\s*LOSS)\s*[:]?\s*(\d[\d.]*)", full_text, re.IGNORECASE)
     if not sl_match:
         return None
     stop_loss = float(sl_match.group(1))
@@ -541,6 +544,23 @@ PARSERS = {
 }
 
 
+def _try_parse(parser, text: str, channel: str) -> Optional[Signal]:
+    """Run one parser defensively.
+
+    A single malformed/edited message must never crash the caller: an
+    exception here would otherwise kill a backtest run or drop the whole
+    Telegram event, so it is logged and treated as "no match".
+    """
+    try:
+        return parser(text, channel)
+    except Exception as e:
+        _logger.warning(
+            f"Parser {parser.__name__} failed on a message from {channel}: "
+            f"{type(e).__name__}: {e} | text={text[:120]!r}"
+        )
+        return None
+
+
 def parse_signal(text: str, channel: str, fmt: str = "auto") -> Optional[Signal]:
     """
     Parse a signal message.
@@ -553,13 +573,13 @@ def parse_signal(text: str, channel: str, fmt: str = "auto") -> Optional[Signal]
         return None
 
     if fmt != "auto" and fmt in PARSERS:
-        result = PARSERS[fmt](text, channel)
+        result = _try_parse(PARSERS[fmt], text, channel)
         if result:
             return result
 
     # Auto: try all
     for parser_name, parser in PARSERS.items():
-        result = parser(text, channel)
+        result = _try_parse(parser, text, channel)
         if result:
             return result
 
