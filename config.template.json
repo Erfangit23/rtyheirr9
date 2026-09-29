@@ -26,7 +26,7 @@
     ]
   },
   "mt5": {
-    "_comment": "اطلاعات اکانت متاتریدر ۵. server را مو‌به‌مو از پنجره‌ی لاگین MT5 کپی کن. symbol باید دقیقاً همان نام طلا در بروکر تو باشد (مثلاً XAUUSD یا XAUUSD.pro یا GOLD) وگرنه بات هیچ پوزیشن بازی را نمی‌بیند. terminal_path اگر MT5 در مسیر پیش‌فرض نصب است خالی بگذار.",
+    "_comment": "اطلاعات اکانت متاتریدر ۵. server را مو‌به‌مو از پنجره‌ی لاگین MT5 کپی کن. symbol باید دقیقاً همان نام طلا در بروکر تو باشد (مثلاً XAUUSD یا XAUUSD.pro یا GOLD) وگرنه بات هیچ پوزیشن بازی را نمی‌بیند. terminal_path: مسیر کامل terminal64.exe را بگذار (مثلاً C://Program Files\\MetaTrader 5\\terminal64.exe) تا اگر MT5 بسته شد، خودِ بات بتواند دوباره بازش کند.",
     "login": 12345678,
     "password": "your_mt5_password",
     "server": "YourBroker-Server",

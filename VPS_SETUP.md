@@ -248,6 +248,88 @@ Also make MT5 start automatically: `Win+R` → `shell:startup` → put a shortcu
 
 ---
 
+## If the bot stops by itself (the VPS restarted / apps closed)
+
+This is almost always the VPS **rebooting** (Windows Update is the usual
+culprit) or the remote session being **logged off**. A bot started by hand dies
+with it. Four things prevent that:
+
+### 1. Make the VPS log in automatically after a reboot
+
+MetaTrader 5 is a desktop app: it needs a logged-in session. Without auto-login
+the terminal (and therefore the bot) cannot start after a restart.
+
+```cmd
+netplwiz
+```
+Untick *"Users must enter a user name and password"*, apply, and enter the
+Windows password once. (On Windows Server: `control userpasswords2`.)
+
+### 2. Register the bot as a scheduled task (not a hand-started window)
+
+Task Scheduler → **Create Task**:
+
+| Tab | Setting |
+|---|---|
+| General | name `XAU Trader Bot`; **Run only when user is logged on** (with auto-login this is always true, and it keeps the bot in the same session as MT5); **Run with highest privileges** |
+| Triggers | **At log on** (and *At startup* as a backup) |
+| Actions | Program: `C:\xau-trader-bot\start.bat` — Start in: `C:\xau-trader-bot` |
+| Settings | *If the task is already running: Do not start a new instance*; untick *Stop the task if it runs longer than…* |
+
+Add a second task for MetaTrader itself (same trigger, Program = `terminal64.exe`),
+or put a shortcut to `terminal64.exe` in `shell:startup`.
+
+### 3. Add the watchdog (restarts anything that dies later)
+
+Create a task running **every 5 minutes**:
+
+| Tab | Setting |
+|---|---|
+| General | same user as the bot, **Run only when user is logged on**, highest privileges |
+| Triggers | Daily → **Repeat task every 5 minutes** for a duration of *Indefinitely* |
+| Actions | Program: `C:\xau-trader-bot\watchdog.bat` — Start in: `C:\xau-trader-bot` |
+
+`watchdog.bat` checks every 5 minutes that **terminal64.exe** and the **bot's
+python.exe** are running, starts whichever is missing, and logs only when it had
+to act (to `logs\watchdog.log`).
+
+### 4. Stop Windows Update from rebooting the VPS
+
+- **Windows 10/11:** Settings → Windows Update → Advanced → Active hours, and set
+  *"Notify to schedule restart"*.
+- **Windows Server:** run `sconfig` → option **5 (Windows Update settings)** →
+  **2 (Download only)** — then you install and reboot on your own schedule.
+
+Also make sure the power plan never sleeps (Step 0).
+
+### How to find out what actually happened
+
+```cmd
+REM when did the machine last boot?
+systeminfo | findstr /C:"System Boot Time"
+
+REM what restarted it: 1074 = a process asked for a restart,
+REM 41 = power loss, 6008 = unexpected shutdown
+wevtutil qe System /q:"*[System[(EventID=1074 or EventID=41 or EventID=6008)]]" /c:10 /rd:true /f:text
+
+REM what was the bot doing when it died?
+type logs\trader_*.log
+
+REM did the watchdog have to intervene?
+type logs\watchdog.log
+```
+
+If the bot log simply stops mid-sentence with no error, the process was killed
+(reboot/logoff) rather than crashed — items 1–4 above fix that.
+
+### Make the bot able to bring MT5 back by itself
+
+Set `mt5.terminal_path` in `config.json` to the full path of `terminal64.exe`
+(e.g. `C:\Program Files\MetaTrader 5\terminal64.exe`). With it, the bot's
+60-second keepalive can **launch** MetaTrader if it was closed, instead of only
+reporting that it cannot connect. Leave it empty only if MT5 is always running
+and you never want the bot to start it.
+
 ## Step 7 — Pre-live checklist
 
 - [ ] Run on a **demo account for 2–3 days** first; watch `/report` and `/trades`
