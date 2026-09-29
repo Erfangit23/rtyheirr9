@@ -295,10 +295,54 @@ to act (to `logs\watchdog.log`).
 
 ### 4. Stop Windows Update from rebooting the VPS
 
-- **Windows 10/11:** Settings → Windows Update → Advanced → Active hours, and set
-  *"Notify to schedule restart"*.
-- **Windows Server:** run `sconfig` → option **5 (Windows Update settings)** →
-  **2 (Download only)** — then you install and reboot on your own schedule.
+This is the #1 cause of "the bot died overnight" — verified on a real VPS by the
+System event log: `MoUsoCoreWorker.exe` + `TrustedInstaller.exe` initiating a
+restart at 00:41 with reason *Operating System: Upgrade (Planned)*.
+
+First check which Windows you have:
+
+```powershell
+(Get-CimInstance Win32_OperatingSystem).Caption
+```
+
+**A. Windows Server → `sconfig`**
+```cmd
+sconfig
+```
+→ option **5** (Windows Update settings) → option **2** (Download only) → `15` to exit.
+
+**B. Windows 10/11, or a Server image without `sconfig`** — run these in an
+**elevated** prompt (works on both editions):
+
+```powershell
+REM never auto-reboot while a user is logged on
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v NoAutoRebootWithLoggedOnUsers /t REG_DWORD /d 1 /f
+reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" /v AUOptions /t REG_DWORD /d 2 /f
+
+REM disable the task that actually performs the update reboot
+schtasks /Change /TN "\Microsoft\Windows\UpdateOrchestrator\Reboot" /Disable
+```
+
+Verify:
+```powershell
+schtasks /Query /TN "\Microsoft\Windows\UpdateOrchestrator\Reboot" /FO LIST | findstr /I "TaskName Status"
+```
+
+GUI equivalent (Windows Pro/Server): `gpedit.msc` → Computer Configuration →
+Administrative Templates → Windows Components → Windows Update → **"No auto-restart
+with logged on users for scheduled automatic updates installations"** → Enabled.
+
+**C. Nuclear option (no automatic updates at all)** — only if you are happy to
+patch the server yourself on a schedule:
+
+```powershell
+sc.exe config wuauserv start= demand
+sc.exe config UsoSvc start= disabled
+```
+
+Whichever you choose, remember the auto-login + log-on tasks + watchdog (items
+1–3) are still what protects you from *every other* reboot cause — provider
+maintenance, power loss, a crash.
 
 Also make sure the power plan never sleeps (Step 0).
 
