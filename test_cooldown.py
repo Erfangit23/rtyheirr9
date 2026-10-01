@@ -199,6 +199,61 @@ def run_scenarios():
         _check(failures, f"Gulljanali still trades (calls={len(mt5.placed)})",
                len(mt5.placed) == 4)
 
+        # --- 6) /cooldown command: show, set, validate ---
+        from bot_commands import CommandHandler
+        h = CommandHandler(settings=settings, mt5=mt5)
+        run = lambda t: asyncio.run(h.handle(t, 1))
+
+        _check(failures, "shows the current cooldown", "90 minutes" in run("/cooldown"))
+        _check(failures, "non-numeric rejected",
+               "❌" in run("/cooldown abc") and settings.sl_cooldown_minutes == 90)
+        _check(failures, "out of range rejected",
+               "❌" in run("/cooldown 5000") and settings.sl_cooldown_minutes == 90)
+
+        # --- 7) /cooldown 0 turns the pause OFF ---
+        out = run("/cooldown 0")
+        _check(failures, f"/cooldown 0 accepted (got {out[:34]!r})",
+               "OFF" in out and settings.sl_cooldown_minutes == 0)
+
+        ticket4 = 50001
+        tm.trades.append(type(tm.trades[0])(
+            ticket=ticket4, channel="@Gulljanali17", symbol="XAUUSD", direction="SELL",
+            entry=4400.0, sl=4410.0, tp=4390.0, tp_index=1, lot_size=0.01,
+            status="filled", timestamp="2026-01-01T00:00:00+00:00"))
+        _FAKE.deals = [FakeDeal(ticket4, ticket4, -1.0)]
+        tm._sl_cooldown.pop("@Gulljanali17", None)
+        asyncio.run(tm.check_trade_updates())
+        _check(failures, "cooldown OFF -> SL registers nothing",
+               "@Gulljanali17" not in tm._sl_cooldown)
+        n = len(mt5.placed)
+        asyncio.run(tm.process_signal(new_signal()))
+        _check(failures, f"signal right after the SL is placed (calls={len(mt5.placed)})",
+               len(mt5.placed) == n + 1)
+
+        # --- 8) /cooldown 45 works again and persists ---
+        run("/cooldown 45")
+        _check(failures, f"set to 45 (got {settings.sl_cooldown_minutes})",
+               settings.sl_cooldown_minutes == 45)
+
+        ticket5 = 50002
+        tm.trades.append(type(tm.trades[0])(
+            ticket=ticket5, channel="@Gulljanali17", symbol="XAUUSD", direction="SELL",
+            entry=4400.0, sl=4410.0, tp=4390.0, tp_index=1, lot_size=0.01,
+            status="filled", timestamp="2026-01-01T00:00:00+00:00"))
+        _FAKE.deals = [FakeDeal(ticket5, ticket5, -1.0)]
+        asyncio.run(tm.check_trade_updates())
+        remaining = tm._cooldown_remaining_min("@Gulljanali17")
+        _check(failures, f"45-min cooldown registered (remaining {remaining:.0f})",
+               44 < remaining <= 45)
+        n = len(mt5.placed)
+        asyncio.run(tm.process_signal(new_signal()))
+        _check(failures, f"signal during the 45-min pause is ignored (calls={len(mt5.placed)})",
+               len(mt5.placed) == n)
+
+        path = os.path.join(tmpdir, "config.json")
+        _check(failures, "setting persists across a restart",
+               Settings(path).sl_cooldown_minutes == 45)
+
         return failures
     finally:
         os.chdir(prev)

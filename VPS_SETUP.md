@@ -466,7 +466,8 @@ read enough history for it at signal time — that filter was inactive, so its
 | `🛑 daily loss cap reached` | Today's loss hit `max_daily_sl_pips` | Normal — resumes next day |
 | `♻️ Duplicate signal ignored` | Channel re-posted a call still pending | Normal — prevents double exposure |
 | No Telegram reports | You never sent `/start` to the bot, or wrong token / user ID | Send `/start` to the bot; check `bot_token` and `authorized_user_ids` |
-| Order stays pending, never fills | It is a **limit** order waiting for the price | Normal — it cancels itself if price reaches TP2 without filling |
+| Order stays pending, never fills | It is a **limit** order waiting for the price | Normal — after a 10-minute grace it cancels itself if price is at/beyond TP2 without filling |
+| "Dual entry placed" then instantly "BOTH orders CANCELLED" | Fixed: the cancel rule had no grace period and fired on the first cycle when price was already past TP2 | `git pull` — orders now get 10 minutes to fill first |
 | Bot restarts in a loop every 10s | Bad `config.json` (missing credentials) | Read the console error, fix `config.json` |
 | `Backtest failed ... could not convert string to float: '.'` | A channel posted/edited a message with a missing price | Fixed — `git pull` and restart |
 | Telegram login fails, or some channels never produce signals | Wrong/revoked api credentials, or the logged-in account is not a member | Run `venv\Scripts\python check_telegram.py` (see below) |
@@ -475,6 +476,6 @@ read enough history for it at signal time — that filter was inactive, so its
 
 ## Telegram command reference
 
-**No password needed:** `/start` `/status` `/settings` `/channels` `/trades` `/report` `/backtest` `/filters` `/filtermode off|dry|on` `/fema /frsi /fatr on|off [@channel]` `/femabuf <0-5>` `/rsith <buy>/<sell>` `/atrfloor <0.1-3>` `/makeaion` `/makeaioff`
+**No password needed:** `/start` `/status` `/settings` `/channels` `/trades` `/report` `/backtest` `/filters` `/filtermode off|dry|on` `/fema /frsi /fatr on|off [@channel]` `/femabuf <0-5>` `/rsith <buy>/<sell>` `/atrfloor <0.1-3>` `/filterpreset strict|balanced|off` `/cooldown <minutes>` `/makeaion` `/makeaioff`
 
 **After `/change` + password:** `lot <size>` `tp <index>` `maxsl <pips>` `dailysl <pips>` `maxtrades <n>` `sleep` `wake` `chan on|off <@channel>` `done`

@@ -61,7 +61,14 @@ class TradeManager:
     # After a real SL hit, these channels pause placing new trades for
     # SL_COOLDOWN_MINUTES (signals arriving during the pause are ignored).
     SL_COOLDOWN_CHANNELS = ("@Gulljanali17",)
-    SL_COOLDOWN_MINUTES = 90
+    SL_COOLDOWN_MINUTES = 90   # default; override with trading.sl_cooldown_minutes (0 = off)
+
+    # A pending order is never cancelled by the "price reached the target while
+    # we were still unfilled" rules during its first minutes. Without this the
+    # cancel fired on the very first 5-second cycle whenever the price was
+    # already at/beyond TP2 when the order was placed — e.g. a Brian dual entry
+    # was reported as placed and cancelled in the same breath.
+    TP_CANCEL_GRACE_MIN = 10
 
     def __init__(
         self,
@@ -226,6 +233,8 @@ class TradeManager:
         """
         if channel not in self.SL_COOLDOWN_CHANNELS:
             return
+        if self.settings.sl_cooldown_minutes <= 0:
+            return
         if profit is not None and abs(profit) < 0.50:
             self.logger.info(
                 f"SL cooldown: {channel} breakeven close (profit={profit:.2f}) — no cooldown"
@@ -235,11 +244,23 @@ class TradeManager:
         self._save_sl_cooldown()
         self.logger.info(
             f"SL cooldown: {channel} SL hit — new trades paused for "
-            f"{self.SL_COOLDOWN_MINUTES} minutes"
+            f"{self.settings.sl_cooldown_minutes} minutes"
         )
+
+    def _pending_age_min(self, trade) -> float:
+        """Minutes since the order was placed (0.0 when unknown — treated as young,
+        so an unreadable timestamp can never trigger an instant cancel)."""
+        try:
+            return (datetime.now(timezone.utc)
+                    - datetime.fromisoformat(trade.timestamp)).total_seconds() / 60
+        except Exception:
+            return 0.0
 
     def _cooldown_remaining_min(self, channel: str) -> float:
         """Minutes of cooldown left for a channel (0 = eligible)."""
+        minutes = self.settings.sl_cooldown_minutes
+        if minutes <= 0:
+            return 0.0            # cooldown disabled from Telegram
         ts = self._sl_cooldown.get(channel)
         if not ts:
             return 0.0
@@ -253,7 +274,7 @@ class TradeManager:
             # Naive timestamp stored by an older version — treat as expired
             self.logger.warning(f"SL cooldown timestamp without timezone: {ts}")
             return 0.0
-        return max(0.0, self.SL_COOLDOWN_MINUTES - elapsed_min)
+        return max(0.0, minutes - elapsed_min)
 
     async def process_signal(self, signal: Signal):
         """Process a parsed signal: apply risk checks and place order."""
@@ -297,7 +318,7 @@ class TradeManager:
                 await self._report(
                     f"⏳ Signal IGNORED — {signal.source_channel} is in SL cooldown:\n"
                     f"{signal.direction} {signal.symbol} Entry={signal.entry}\n"
-                    f"Last SL was < {self.SL_COOLDOWN_MINUTES} min ago.\n"
+                    f"Last SL was < {self.settings.sl_cooldown_minutes} min ago.\n"
                     f"Channel eligible again in {int(remaining) + 1} min."
                 )
                 return
@@ -1381,6 +1402,15 @@ class TradeManager:
                                 should_cancel = True
 
                         if should_cancel:
+                            age = self._pending_age_min(trade)
+                            if age < self.TP_CANCEL_GRACE_MIN:
+                                self.logger.info(
+                                    f"Price already at TP2 ({tp2}) for #{trade.ticket} but the "
+                                    f"order is only {age:.0f} min old — letting it try to fill "
+                                    f"(grace {self.TP_CANCEL_GRACE_MIN} min)."
+                                )
+                                should_cancel = False
+                        if should_cancel:
                             self.logger.info(
                                 f"Price reached TP2 ({tp2}) for pending {trade.direction} "
                                 f"order #{trade.ticket}. Cancelling order."
@@ -1416,6 +1446,15 @@ class TradeManager:
                             if current_bid >= tp1:
                                 should_cancel = True
 
+                        if should_cancel:
+                            age = self._pending_age_min(trade)
+                            if age < self.TP_CANCEL_GRACE_MIN:
+                                self.logger.info(
+                                    f"Price already at TP1 ({tp1}) for #{trade.ticket} but the "
+                                    f"order is only {age:.0f} min old — letting it try to fill "
+                                    f"(grace {self.TP_CANCEL_GRACE_MIN} min)."
+                                )
+                                should_cancel = False
                         if should_cancel:
                             self.logger.info(
                                 f"Price reached TP1 ({tp1}) for pending {trade.direction} "
@@ -1455,6 +1494,15 @@ class TradeManager:
                             if current_bid >= tp2:
                                 should_cancel = True
 
+                        if should_cancel:
+                            age = self._pending_age_min(trade)
+                            if age < self.TP_CANCEL_GRACE_MIN:
+                                self.logger.info(
+                                    f"BrianTradingForex: price already at TP2 ({tp2}) for "
+                                    f"#{trade.ticket} but the order is only {age:.0f} min old — "
+                                    f"letting it try to fill (grace {self.TP_CANCEL_GRACE_MIN} min)."
+                                )
+                                should_cancel = False
                         if should_cancel:
                             self.logger.info(
                                 f"BrianTradingForex: Price reached TP2 ({tp2}) for pending "

@@ -98,8 +98,10 @@
     "max_sl_pips": 150,
     "max_daily_sl_pips": 500,
     "max_open_trades": 5,
+    "sl_cooldown_minutes": 90,
     "bot_active": true,
-    "settings_password": "Amin123"
+    "settings_password": "Amin123",
+    "_sl_cooldown_minutes": "مدت توقف کانال @Gulljanali17 بعد از خوردن حد ضرر (دقیقه). 0 = خاموش. از تلگرام هم با /cooldown قابل تغییر است."
   },
   "validation": {
     "_comment": "فیلترهای کیفیت سیگنال. mode: off = خاموش | dry_run = فقط گزارش بده و معامله را انجام بده (پیشنهادی) | on = واقعاً بلاک کن. با /backtest ببین هر کدام به نفع یا ضرر کانال است.",

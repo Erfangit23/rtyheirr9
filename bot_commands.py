@@ -75,6 +75,7 @@ class CommandHandler:
                 "/fema /frsi /fatr on|off [@channel] - Toggle a filter\n"
                 "/femabuf /rsith /atrfloor <value> - Tune filter thresholds\n"
                 "/filterpreset strict|balanced|off - One-shot threshold presets\n"
+                "/cooldown <minutes> - SL cooldown pause (0 = off)\n"
                 "/makeaion - Enable AI signal parsing\n"
                 "/makeaioff - Disable AI signal parsing\n\n"
                 "🔐 To change settings, send:\n"
@@ -168,6 +169,27 @@ class CommandHandler:
             self.settings.set_atr_floor(val)
             return (f"✅ ATR SL floor = {val:g}x ATR(M15)\n"
                     f"Run /backtest to see the effect before enforcing.")
+
+        # --- SL cooldown control ---
+        if text.lower().startswith("/cooldown"):
+            parts = text.split()
+            cur = self.settings.sl_cooldown_minutes
+            if len(parts) < 2:
+                state = f"{cur} minutes" if cur > 0 else "OFF (disabled)"
+                return (f"⏸️ SL cooldown: {state}\n"
+                        f"After a real SL on @Gulljanali17 the channel is paused for this long.\n"
+                        f"Usage: /cooldown <minutes>   (0 = off)")
+            try:
+                val = int(parts[1])
+            except ValueError:
+                return "❌ Not a number. Example: /cooldown 0"
+            if val < 0 or val > 1440:
+                return "❌ Use 0 (off) up to 1440 minutes (24h)."
+            self.settings.set_sl_cooldown_minutes(val)
+            if val == 0:
+                return ("✅ SL cooldown is now OFF — @Gulljanali17 keeps trading "
+                        "immediately after a stop-out.")
+            return f"✅ SL cooldown set to {val} minutes."
 
         # --- Filter presets ---
         if text.lower().startswith("/filterpreset"):
@@ -406,6 +428,7 @@ class CommandHandler:
             f"Max SL (per trade): {p['max_sl_pips']} pips\n"
             f"Max SL (per day): {p['max_daily_sl_pips']} pips\n"
             f"Max Open Trades: {max_open if max_open else 'unlimited'}\n"
+            f"SL Cooldown: {str(p['sl_cooldown_minutes']) + ' min' if p['sl_cooldown_minutes'] else 'OFF'}\n"
             f"Bot Active: {'Yes' if p['bot_active'] else 'No'}\n"
             f"AI Mode: {'ON (DeepSeek V4 Flash)' if p['ai_mode'] else 'OFF (regex parsers)'}\n"
             f"\nSend /change to modify (password required)\n"

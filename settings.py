@@ -131,6 +131,20 @@ class Settings:
     def settings_password(self) -> str:
         return self.trading.get("settings_password", "Amin123")
 
+    # --- SL cooldown (pause a channel after a real SL hit) ---
+    @property
+    def sl_cooldown_minutes(self) -> int:
+        """Minutes to pause a channel after a real SL hit. 0 disables it."""
+        try:
+            return int(self.trading.get("sl_cooldown_minutes", 90))
+        except (TypeError, ValueError):
+            return 90
+
+    def set_sl_cooldown_minutes(self, value: int):
+        with self._lock:
+            self._data.setdefault("trading", {})["sl_cooldown_minutes"] = int(value)
+        self.save()
+
     @property
     def ai_mode(self) -> bool:
         return self.trading.get("ai_mode", False)
@@ -308,6 +322,7 @@ class Settings:
             "max_sl_pips": t.get("max_sl_pips", 150),
             "max_daily_sl_pips": t.get("max_daily_sl_pips", 500),
             "max_open_trades": t.get("max_open_trades", 5),
+            "sl_cooldown_minutes": t.get("sl_cooldown_minutes", 90),
             "bot_active": t.get("bot_active", True),
             "ai_mode": t.get("ai_mode", False),
         }

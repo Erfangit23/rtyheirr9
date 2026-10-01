@@ -68,6 +68,7 @@
     "max_sl_pips": 150,
     "max_daily_sl_pips": 500,
     "max_open_trades": 5,
+    "sl_cooldown_minutes": 90,
     "bot_active": true,
     "settings_password": "Amin123"
   }
