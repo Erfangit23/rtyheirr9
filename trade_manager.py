@@ -18,6 +18,13 @@ from signal_validator import SignalValidator
 
 # @khanbours / @khanbourse / @khanbouse are all the khan channel (renames).
 # Same rules everywhere: TP1 target, cancel pending order if TP1 hit unfilled.
+# Channels that place TWO orders per signal (one per entry): the
+# closer-to-market entry targets TP1, the farther one targets TP2, and when the
+# closer leg hits TP1 the other leg's SL moves to its own entry (risk-free).
+# @BrianTradingForex additionally gets its 5-pip entry pull and TP adjustments;
+# @goldviptraderyy_7 uses the channel's own levels untouched.
+DUAL_ENTRY_CHANNELS = ("@BrianTradingForex", "@goldviptraderyy_7")
+
 KHAN_CHANNELS = ("@forexkhan", "@khanbours", "@khanbourse", "@khanbouse")
 
 
@@ -462,10 +469,13 @@ class TradeManager:
         elif signal.source_channel == "@Signal_Atlas":
             tp_index = 2
             self.logger.info("Channel @Signal_Atlas: using TP2")
-        elif signal.source_channel == "@BrianTradingForex":
+        elif signal.source_channel in DUAL_ENTRY_CHANNELS:
             dual_entry = True
             tp_index = 2
-            self.logger.info("Channel @BrianTradingForex: placing dual entry orders (entry1->TP1, entry2->TP2)")
+            self.logger.info(
+                f"Channel {signal.source_channel}: placing dual entry orders "
+                f"(closer entry -> TP1, farther entry -> TP2, breakeven after TP1)"
+            )
         elif signal.source_channel == "@Eliz_fxac_ademy1":
             tp_index = 1
             self.logger.info("Channel @Eliz_fxac_ademy1: using TP1, single entry (first value of range)")
@@ -702,15 +712,19 @@ class TradeManager:
                     raw_text=signal.raw_text,
                     source_channel=signal.source_channel,
                 )
-                # BrianTradingForex uses a dual-entry breakeven strategy: the
+                # @BrianTradingForex uses a dual-entry breakeven strategy: the
                 # farther leg goes risk-free once the closer leg hits TP1, so its
                 # (sometimes wide) initial SL is by design. Bypass the global
-                # SL-pip cap here so these signals aren't rejected as "SL too large".
+                # SL-pip cap for that channel only, so its signals aren't
+                # rejected as "SL too large". Other dual-entry channels keep the
+                # normal cap.
+                sl_cap = (10**9 if signal.source_channel == "@BrianTradingForex"
+                          else self.settings.max_sl_pips)
                 ticket = self.mt5.place_limit_order(
                     signal=mod_signal,
                     lot_size=leg_lot,
                     tp_index=1,  # Only 1 TP in the modified signal
-                    max_sl_pips=10**9,  # effectively no cap (breakeven strategy)
+                    max_sl_pips=sl_cap,
                 )
                 results.append((label, entry_val, tp_val, ticket))
 

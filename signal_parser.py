@@ -540,6 +540,60 @@ def parse_format8(text: str, channel: str) -> Optional[Signal]:
     )
 
 
+def parse_format9(text: str, channel: str) -> Optional[Signal]:
+    """Parse Format 9: goldviptraderyy style — dual entry, DOT-separated range.
+
+    Example:
+    GOLD BUY 4153.4150
+    TP 4160
+    TP 4170
+    TP 4190
+    SL 4144
+
+    The two entries are written as "4153.4150" (a dot between them, not a dash).
+    This parser deliberately REQUIRES that dot range so it can never hijack
+    another channel's single-price message.
+    """
+    full_text = text.strip()
+
+    dir_match = re.search(r"(?:GOLD|XAUUSD|XAU)[/\s]*(BUY|SELL)\b", full_text, re.IGNORECASE)
+    if not dir_match:
+        return None
+    direction = dir_match.group(1).upper()
+
+    after_dir = full_text[dir_match.end():]
+
+    # Two prices joined by a dot: 4153.4150 -> entries 4153 and 4150
+    m = re.search(r"(\d{3,5})\s*\.\s*(\d{3,5})(?!\d)", after_dir)
+    if not m:
+        return None
+    entries = [float(m.group(1)), float(m.group(2))]
+    entry = entries[0]
+
+    sl_match = re.search(r"(?:SL|STOP\s*LOSS)\s*[:]?\s*(\d[\d.]*)", full_text, re.IGNORECASE)
+    if not sl_match:
+        return None
+    stop_loss = float(sl_match.group(1))
+
+    # NOTE: \d* must be LAZY — a greedy one eats the leading digits and the
+    # capture group ends up with only the last one ("TP 4160" -> "0").
+    tp_matches = re.findall(r"(?:TP|TARGET)\s*\d*?\s*[:]?\s*(\d[\d.]*)", full_text, re.IGNORECASE)
+    take_profits = [float(tp) for tp in tp_matches]
+    if not take_profits:
+        return None
+
+    return Signal(
+        symbol="XAUUSD",
+        direction=direction,
+        entry=entry,
+        stop_loss=stop_loss,
+        take_profits=take_profits,
+        source_channel=channel,
+        entries=entries,
+        raw_text=full_text,
+    )
+
+
 PARSERS = {
     "format1": parse_format1,
     "format2": parse_format2,
@@ -549,6 +603,7 @@ PARSERS = {
     "format6": parse_format6,
     "format7": parse_format7,
     "format8": parse_format8,
+    "format9": parse_format9,
 }
 
 

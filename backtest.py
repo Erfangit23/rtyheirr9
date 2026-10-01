@@ -196,6 +196,8 @@ class Backtester:
 
     # khan family: TP1 target + cancel the pending order if TP1 is reached unfilled
     KHAN_CHANNELS = ("@forexkhan", "@khanbours", "@khanbourse", "@khanbouse")
+    # two orders per signal: closer entry -> TP1, farther -> TP2 + breakeven
+    DUAL_ENTRY_CHANNELS = ("@BrianTradingForex", "@goldviptraderyy_7")
 
     def _channel_tp_index(self, channel: str, n_tps: int) -> int:
         idx = self.TP_RULES.get(channel, 2)  # default TP2 like live default
@@ -663,31 +665,43 @@ class Backtester:
             out.status = "expired"
         return out
 
-    def _simulate_brian(self, sig, rates, signal_epoch) -> list:
+    def _simulate_brian(self, sig, rates, signal_epoch, adjust=True) -> list:
         """Dual-entry simulation: closer leg -> TP1, farther leg -> TP2 with
-        breakeven after the closer leg hits TP1. Both entries are pulled 5 pips
-        toward market (first bar close at/after the signal approximates it).
-        Cancel rule mirrors live: if the channel's raw TP2 is reached before the
-        closer leg fills, both legs are cancelled."""
+        breakeven after the closer leg hits TP1. Cancel rule mirrors live: if
+        the channel's raw TP2 is reached before the closer leg fills, both legs
+        are cancelled.
+
+        adjust=True reproduces @BrianTradingForex (5-pip entry pull toward
+        market, TP1 -10 pips, TP2 capped at 150 pips). adjust=False uses the
+        channel's own levels untouched — e.g. @goldviptraderyy_7.
+        """
         direction = sig.direction.upper()
 
-        # Pull entries 5 pips toward market (same as live process_signal)
-        market = None
-        for bar in rates:
-            if bar["time"] >= signal_epoch:
-                market = bar["close"]
-                break
-        pull = 5 * self.PIP
-        adj_entries = []
-        for e in sig.entries:
-            a = round(e + pull, 2) if direction == "BUY" else round(e - pull, 2)
-            if market is None or (a < market if direction == "BUY" else a > market):
-                adj_entries.append(a)
+        if adjust:
+            # Pull entries 5 pips toward market (same as live process_signal)
+            market = None
+            for bar in rates:
+                if bar["time"] >= signal_epoch:
+                    market = bar["close"]
+                    break
+            pull = 5 * self.PIP
+            adj_entries = []
+            for e in sig.entries:
+                a = round(e + pull, 2) if direction == "BUY" else round(e - pull, 2)
+                if market is None or (a < market if direction == "BUY" else a > market):
+                    adj_entries.append(a)
+                else:
+                    adj_entries.append(e)
+            sig.entries = adj_entries
+            (e1, tp1), (e2, tp2) = self._prep_brian_legs(sig)
+        else:
+            # raw levels: the entry closer to the market takes TP1
+            raw = list(zip(sig.entries, sig.take_profits[:len(sig.entries)]))
+            if direction == "BUY":
+                raw.sort(key=lambda p: -p[0])      # higher entry = closer
             else:
-                adj_entries.append(e)
-        sig.entries = adj_entries
-
-        (e1, tp1), (e2, tp2) = self._prep_brian_legs(sig)
+                raw.sort(key=lambda p: p[0])       # lower entry = closer
+            (e1, tp1), (e2, tp2) = raw[0], raw[1]
         sl_orig = sig.stop_loss
         # Cancel level: the channel's raw TP2 (NOT the adjusted leg TPs)
         cancel_tp = sig.take_profits[1] if len(sig.take_profits) >= 2 else tp1
@@ -825,7 +839,7 @@ class Backtester:
 
             self._apply_channel_adjustments(sig, rates, signal_epoch)
 
-            is_brian = (sig.source_channel == "@BrianTradingForex"
+            is_brian = (sig.source_channel in self.DUAL_ENTRY_CHANNELS
                         and len(getattr(sig, "entries", []) or []) >= 2
                         and len(sig.take_profits) >= 2)
 
@@ -847,7 +861,9 @@ class Backtester:
                 continue
 
             if is_brian:
-                outcomes = self._simulate_brian(sig, rates, signal_epoch)
+                outcomes = self._simulate_brian(
+                    sig, rates, signal_epoch,
+                    adjust=(sig.source_channel == "@BrianTradingForex"))
             else:
                 # khan channels cancel the pending order if TP1 is reached unfilled
                 cancel_at = (sig.take_profits[0]

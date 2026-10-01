@@ -9,7 +9,8 @@
     "format6": "⚜️ XAUUSD - BUY NOW  +  🛒 Entry : 4081  +  🎯 Targets :  +  🔺 Stoploss : 4076",
     "format7": "XAUUSD | SELL 📈  +  Entry : 4043  +  ✔️TP1: 4039  +  ❌SL : 4052",
     "format8": "GOLD Buy Limit 4252-4253  +  TP 4259  +  SL 4246   (محدوده‌ی ورود)",
-    "auto": "اگر فرمت کانال را نمی‌دانی auto بگذار — بات همه‌ی پارسرها را به ترتیب امتحان می‌کند"
+    "auto": "اگر فرمت کانال را نمی‌دانی auto بگذار — بات همه‌ی پارسرها را به ترتیب امتحان می‌کند",
+    "format9": "GOLD BUY 4153.4150  +  TP 4160  +  TP 4170  +  SL 4144   (دو ورودی با نقطه)"
   },
   "telegram": {
     "_comment": "اکانت شخصی تلگرام خودت (نه بات). api_id و api_hash را از my.telegram.org/apps بگیر. بار اول که اجرا کنی کد ورود می‌خواهد و یک فایل session می‌سازد که دفعه‌های بعد استفاده می‌شود.",
@@ -82,6 +83,10 @@
     {
       "id": "@Eliz_fxac_ademy1",
       "format": "format8"
+    },
+    {
+      "id": "@goldviptraderyy_7",
+      "format": "format9"
     }
   ],
   "trading": {
