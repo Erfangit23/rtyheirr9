@@ -197,11 +197,12 @@ SL 4160"""
         asyncio.run(tm.process_signal(brian))
         b_legs = [(s_.entry, s_.take_profits[0]) for s_, _l in mt5.calls]
         # entries pulled +5 pips; closer leg (4063.5) -> TP1 4068-10p = 4067;
-        # farther leg (4060.5) -> TP2 capped from signal.entries[1] (=4063.5)
-        # +150p -10p = 4077.5  (NOTE: the live cap is measured from entries[1],
-        # not from the farther leg's own entry — reported to the user)
+        # farther leg (4060.5) -> TP2 = 150-pip cap from ITS OWN entry (4075.5)
+        # minus the 10-pip pull = 4074.5 (i.e. 140 pips, was 170 before the fix)
         _check(failures, f"Brian keeps its pull + TP tweaks (got {b_legs})",
-               b_legs == [(4063.5, 4067.0), (4060.5, 4077.5)])
+               b_legs == [(4063.5, 4067.0), (4060.5, 4074.5)])
+        _check(failures, "Brian's far leg is capped near 150 pips, not 170",
+               abs(4060.5 - 4074.5) / 0.1 <= 150)
 
         # ---------------- SL cap applies here, not to Brian ----------------
         print("-- SL cap --")

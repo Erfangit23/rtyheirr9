@@ -239,15 +239,17 @@ class Backtester:
         tps = sig.take_profits
         adj = 1.0  # 10 pips
         if sig.direction.upper() == "BUY":
-            tp1 = tps[0] - adj
-            cap = e2 + (150 * self.PIP) - adj
-            tp2 = min(tps[1], cap) if len(tps) >= 2 else cap
             closer, farther = (e1, e2) if e1 >= e2 else (e2, e1)
+            tp1 = tps[0] - adj
+            # the cap must be measured from the leg that carries TP2 (the
+            # farther entry) — see the same fix in trade_manager.process_signal
+            cap = farther + (150 * self.PIP) - adj
+            tp2 = min(tps[1], cap) if len(tps) >= 2 else cap
         else:
-            tp1 = tps[0] + adj
-            cap = e2 - (150 * self.PIP) + adj
-            tp2 = max(tps[1], cap) if len(tps) >= 2 else cap
             closer, farther = (e1, e2) if e1 <= e2 else (e2, e1)
+            tp1 = tps[0] + adj
+            cap = farther - (150 * self.PIP) + adj
+            tp2 = max(tps[1], cap) if len(tps) >= 2 else cap
         return (closer, tp1), (farther, tp2)
 
     # ------------------------------------------------------------------

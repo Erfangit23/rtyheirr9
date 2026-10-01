@@ -638,14 +638,20 @@ class TradeManager:
                     tp1_price = tp1_price + tp_adjustment
                     self.logger.info(f"TP1 adjusted +10 pips: {signal.take_profits[0]} -> {tp1_price}")
 
-                # Cap TP2 at 150 pips profit from the second entry
+                # Cap TP2 at 150 pips profit, measured from the entry that
+                # actually carries TP2 — the FARTHER leg (the closer leg fills
+                # first and takes TP1). Measuring from entries[1] was wrong
+                # whenever entries[1] happened to be the closer leg, which let
+                # the far leg end up ~170 pips out instead of 150.
                 pip_size = 0.1  # Gold: 1 pip = 0.1 price units
                 max_tp_pips = 150
                 if signal.direction.upper() == "BUY":
-                    tp2_price_capped = entry2 + (max_tp_pips * pip_size)
+                    tp2_entry = min(entry1, entry2)   # lower entry = farther
+                    tp2_price_capped = tp2_entry + (max_tp_pips * pip_size)
                     tp2_price_capped = tp2_price_capped - tp_adjustment  # Also adjust closer
                 else:  # SELL
-                    tp2_price_capped = entry2 - (max_tp_pips * pip_size)
+                    tp2_entry = max(entry1, entry2)   # higher entry = farther
+                    tp2_price_capped = tp2_entry - (max_tp_pips * pip_size)
                     tp2_price_capped = tp2_price_capped + tp_adjustment  # Also adjust closer
                 # Use channel TP2 if it's closer than 150 pips, otherwise use capped
                 if len(signal.take_profits) >= 2:
@@ -658,9 +664,9 @@ class TradeManager:
                     tp2_price = tp2_price_capped
 
                 self.logger.info(
-                    f"BrianTradingForex: TP2 capped at 150 pips: {tp2_price} "
+                    f"BrianTradingForex: TP2 = {tp2_price} "
                     f"(channel TP2={signal.take_profits[1] if len(signal.take_profits) >= 2 else 'N/A'}, "
-                    f"capped={tp2_price_capped})"
+                    f"150-pip cap from the farther entry {tp2_entry} -> {tp2_price_capped})"
                 )
             else:
                 # @Eliz_fxac_ademy1: use raw TP values, no adjustment
